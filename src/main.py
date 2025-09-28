@@ -306,18 +306,50 @@ class AudioPipeline:
             console.print(f"[red]❌ Stage 4b failed: {e}")
             return False
 
-    async def run_full_pipeline(self, start_stage: str | None = None) -> bool:
-        """Run the complete pipeline or resume from a specific stage."""
+    async def run_full_pipeline(self, stages: str | None = None, continue_after: bool = False) -> bool:
+        """Run the complete pipeline, specific stages, or resume from a specific stage."""
         console.print(Panel(f"🚀 Audio Processing Pipeline v{__version__}", style="bold magenta"))
 
-        if not start_stage:
+        # Stage name mapping
+        stage_mapping = {
+            "bootstrap": "stage0_bootstrap",
+            "preprocess": "stage1_preprocess",
+            "vad": "stage2_vad",
+            "whisper": "stage3_whisper",
+            "merge": "stage4a_merge",
+            "cleanup": "stage4b_cleanup",
+        }
+
+        # Parse stages parameter
+        if stages:
+            # Parse comma-separated stage list
+            stage_names = [name.strip() for name in stages.split(",")]
+
+            # Validate stage names
+            invalid_stages = [name for name in stage_names if name not in stage_mapping]
+            if invalid_stages:
+                console.print(f"[red]❌ Invalid stage names: {', '.join(invalid_stages)}")
+                console.print(f"[cyan]Valid stages: {', '.join(stage_mapping.keys())}")
+                return False
+
+            # Convert to internal stage names
+            target_stages = [stage_mapping[name] for name in stage_names]
+            start_stage = target_stages[0]
+
+            console.print(f"[cyan]Running stages: {', '.join(stage_names)}")
+            if continue_after:
+                console.print("[cyan]Will continue to remaining stages after completion")
+        else:
+            # No specific stages - resume from where we left off or start from beginning
             start_stage = self.status.get_resume_stage()
+            target_stages = None
+            continue_after = True  # Default behavior for full pipeline
 
-        if not start_stage:
-            console.print("[green]✅ Pipeline already completed!")
-            return True
+            if not start_stage:
+                console.print("[green]✅ Pipeline already completed!")
+                return True
 
-        console.print(f"[cyan]Starting from: {start_stage}")
+            console.print(f"[cyan]Starting from: {start_stage}")
 
         # Record pipeline start
         if not self.status.status["pipeline_start"]:
@@ -342,9 +374,34 @@ class AudioPipeline:
 
         start_index = stage_order.index(start_stage)
 
+        # Determine which stages to run
+        if target_stages and not continue_after:
+            # Run only the specified stages
+            stages_to_run = target_stages
+        else:
+            # Run from start_stage to end (or until target stages complete if continue_after)
+            start_index = stage_order.index(start_stage)
+            stages_to_run = stage_order[start_index:]
+
+            if target_stages and continue_after:
+                # Find the last target stage and include all stages up to end
+                last_target_index = max(stage_order.index(stage) for stage in target_stages)
+                stages_to_run = stage_order[start_index:]
+
+        # Reset manually specified stages to pending (force re-run)
+        if target_stages:
+            for stage_name in target_stages:
+                if self.status.is_stage_completed(stage_name):
+                    console.print(f"[yellow]🔄 Resetting {stage_name} (manually specified)")
+                    self.status.status["stages"][stage_name]["status"] = "pending"
+                    self.status.status["stages"][stage_name]["start_time"] = None
+                    self.status.status["stages"][stage_name]["end_time"] = None
+            self.status.save_status()
+
         # Run stages
-        for stage_name in stage_order[start_index:]:
-            if self.status.is_stage_completed(stage_name):
+        for stage_name in stages_to_run:
+            # Only skip completed stages if they weren't manually specified
+            if self.status.is_stage_completed(stage_name) and (not target_stages or stage_name not in target_stages):
                 console.print(f"[green]✅ Skipping {stage_name} (already completed)")
                 continue
 
@@ -363,6 +420,13 @@ class AudioPipeline:
                 if not success:
                     console.print(f"[red]❌ Pipeline stopped at {stage_name}")
                     return False
+
+                # If this was the last target stage and we're not continuing, stop here
+                if target_stages and not continue_after and stage_name in target_stages:
+                    remaining_targets = [s for s in target_stages if s in stages_to_run[stages_to_run.index(stage_name)+1:]]
+                    if not remaining_targets:
+                        console.print(f"[green]✅ Specified stages completed")
+                        return True
 
             except Exception as e:
                 logger.error(f"Stage {stage_name} failed: {e}")
@@ -415,14 +479,16 @@ def cli(ctx, verbose: bool, config_file: Path | None):
 
 
 @cli.command()
+@click.option("--stage", help="Comma-separated list of stages to run (bootstrap,preprocess,vad,whisper,merge,cleanup)")
+@click.option("--continue", "continue_after", is_flag=True, help="Continue to next stages after specified stages complete")
 @click.pass_context
-def run(ctx):
-    """Run the complete audio processing pipeline."""
+def run(ctx, stage: str | None, continue_after: bool):
+    """Run the complete audio processing pipeline or specific stages."""
     config = ctx.obj["config"]
     pipeline = AudioPipeline(config)
 
     try:
-        success = asyncio.run(pipeline.run_full_pipeline())
+        success = asyncio.run(pipeline.run_full_pipeline(stages=stage, continue_after=continue_after))
         if not success:
             sys.exit(1)
     except KeyboardInterrupt:
@@ -433,37 +499,6 @@ def run(ctx):
         sys.exit(1)
 
 
-@cli.command()
-@click.option("--stage", type=click.Choice([
-    "bootstrap", "preprocess", "vad", "whisper", "merge", "cleanup",
-]), required=True, help="Stage to run")
-@click.pass_context
-def run_stage(ctx, stage: str):
-    """Run a specific pipeline stage."""
-    config = ctx.obj["config"]
-    pipeline = AudioPipeline(config)
-
-    stage_mapping = {
-        "bootstrap": "stage0_bootstrap",
-        "preprocess": "stage1_preprocess",
-        "vad": "stage2_vad",
-        "whisper": "stage3_whisper",
-        "merge": "stage4a_merge",
-        "cleanup": "stage4b_cleanup",
-    }
-
-    start_stage = stage_mapping[stage]
-
-    try:
-        success = asyncio.run(pipeline.run_full_pipeline(start_stage))
-        if not success:
-            sys.exit(1)
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Stage interrupted by user")
-        sys.exit(1)
-    except Exception as e:
-        console.print(f"[red]Stage failed: {e}")
-        sys.exit(1)
 
 
 @cli.command()
