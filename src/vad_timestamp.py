@@ -147,8 +147,8 @@ class SileroVAD:
                     frame_end = min(frame_start + frame_samples, len(block_audio))
                     frame_audio = block_audio[frame_start:frame_end]
 
-                    # Skip if frame is too short
-                    if len(frame_audio) < frame_samples // 2:
+                    # Skip if frame is too short - Silero VAD requires minimum 512 samples (32ms at 16kHz)
+                    if len(frame_audio) < frame_samples:
                         continue
 
                     # Check RMS gate
