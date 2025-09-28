@@ -146,8 +146,8 @@ class WhisperTranscriber:
 
             should_merge = (
                 gap_ms <= self.whisper_config.merge_sentence_gap_ms and
-                (current_duration < self.whisper_config.min_sentence_ms or
-                 next_duration < self.whisper_config.min_sentence_ms)
+                current_duration < self.whisper_config.min_sentence_ms and
+                next_duration < self.whisper_config.min_sentence_ms
             )
 
             if should_merge:
