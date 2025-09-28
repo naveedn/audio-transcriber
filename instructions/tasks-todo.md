@@ -15,12 +15,12 @@
 
 
 ### code clean up
-- Add readme
+<!--- Add readme-->
 - refactor the main file to not have a numerical stage mapping, allow the order to be defined by array index ordering or explicitly by the user.
 - fix linter errors
 - add ruff as a pre-commit hook.
 - add unit tests
-- add clean command that wipes the inputs, outputs, and status so that we can start with a new audio process.
+<!--- add clean command that wipes the inputs, outputs, and status so that we can start with a new audio process.-->
 
 ### performance
 - debug why the whisper step keeps downloading a model instead of using one that is cached on the filesystem?

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -72,11 +73,59 @@ class PipelineStatus:
         self.status["stages"][stage_name]["start_time"] = datetime.now().isoformat()
         self.save_status()
 
+    def get_stage_elapsed_time(self, stage_name: str) -> str:
+        """Get elapsed time for a running stage."""
+        start_time_str = self.status["stages"][stage_name].get("start_time")
+        if not start_time_str:
+            return "0:00"
+
+        try:
+            start_time = datetime.fromisoformat(start_time_str)
+            elapsed = datetime.now() - start_time
+            return str(elapsed).split(".")[0]  # Remove microseconds
+        except:
+            return "0:00"
+
     def complete_stage(self, stage_name: str, success: bool = True) -> None:
         """Mark a stage as completed."""
         self.status["stages"][stage_name]["status"] = "completed" if success else "failed"
         self.status["stages"][stage_name]["end_time"] = datetime.now().isoformat()
         self.save_status()
+
+        # Calculate and display duration
+        duration = self.get_stage_duration(stage_name)
+        stage_display_name = self._get_stage_display_name(stage_name)
+        if success:
+            console.print(f"[green]✅ {stage_display_name} completed in {duration}")
+        else:
+            console.print(f"[red]❌ {stage_display_name} failed after {duration}")
+
+    def get_stage_duration(self, stage_name: str) -> str:
+        """Get duration of a completed stage."""
+        start_time_str = self.status["stages"][stage_name].get("start_time")
+        end_time_str = self.status["stages"][stage_name].get("end_time")
+
+        if not start_time_str or not end_time_str:
+            return "0:00"
+
+        try:
+            start_time = datetime.fromisoformat(start_time_str)
+            end_time = datetime.fromisoformat(end_time_str)
+            duration = end_time - start_time
+            return str(duration).split(".")[0]  # Remove microseconds
+        except:
+            return "0:00"
+
+    def _get_stage_display_name(self, stage_name: str) -> str:
+        """Get display name for a stage."""
+        stage_names = {
+            "stage0_bootstrap": "Bootstrap",
+            "stage1_preprocess": "Audio Preprocessing",
+            "stage2_vad": "Voice Activity Detection",
+            "stage3_whisper": "Speech Transcription",
+            "stage4_process": "Final Processing",
+        }
+        return stage_names.get(stage_name, stage_name)
 
     def is_stage_completed(self, stage_name: str) -> bool:
         """Check if a stage is already completed."""
@@ -150,6 +199,7 @@ class AudioPipeline:
     def bootstrap(self) -> bool:
         """Stage 0: Bootstrap - check dependencies and download models."""
         console.print(Panel("🚀 Stage 0: Bootstrap Process", style="bold blue"))
+        stage_start_time = time.time()
 
         try:
             # Create directories
@@ -207,12 +257,10 @@ class AudioPipeline:
             else:
                 console.print("[yellow]⚠️ OpenAI API key not provided - GPT stages will be skipped")
 
-            console.print("[green]✅ Bootstrap completed successfully!")
             return True
 
         except Exception as e:
             logger.error(f"Bootstrap failed: {e}")
-            console.print(f"[red]❌ Bootstrap failed: {e}")
             return False
 
     async def run_stage1(self) -> bool:
@@ -222,13 +270,12 @@ class AudioPipeline:
         try:
             output_files = await preprocess_audio(self.config)
             if output_files:
-                console.print(f"[green]✅ Processed {len(output_files)} audio files")
+                console.print(f"[green]Processed {len(output_files)} audio files")
                 return True
-            console.print("[red]❌ No audio files processed")
+            console.print("[yellow]No audio files processed")
             return False
         except Exception as e:
             logger.error(f"Stage 1 failed: {e}")
-            console.print(f"[red]❌ Stage 1 failed: {e}")
             return False
 
     async def run_stage2(self) -> bool:
@@ -238,13 +285,12 @@ class AudioPipeline:
         try:
             output_files = await process_vad(self.config)
             if output_files:
-                console.print(f"[green]✅ Generated VAD timestamps for {len(output_files)} files")
+                console.print(f"[green]Generated VAD timestamps for {len(output_files)} files")
                 return True
-            console.print("[red]❌ No VAD timestamps generated")
+            console.print("[yellow]No VAD timestamps generated")
             return False
         except Exception as e:
             logger.error(f"Stage 2 failed: {e}")
-            console.print(f"[red]❌ Stage 2 failed: {e}")
             return False
 
     def run_stage3(self) -> bool:
@@ -254,13 +300,12 @@ class AudioPipeline:
         try:
             output_files = transcribe_audio(self.config)
             if output_files:
-                console.print(f"[green]✅ Transcribed {len(output_files)} files")
+                console.print(f"[green]Transcribed {len(output_files)} files")
                 return True
-            console.print("[red]❌ No transcriptions generated")
+            console.print("[yellow]No transcriptions generated")
             return False
         except Exception as e:
             logger.error(f"Stage 3 failed: {e}")
-            console.print(f"[red]❌ Stage 3 failed: {e}")
             return False
 
 
@@ -275,13 +320,12 @@ class AudioPipeline:
         try:
             output_file = cleanup_transcript(self.config)
             if output_file:
-                console.print(f"[green]✅ Final transcript created: {output_file.name}")
+                console.print(f"[green]Final transcript created: {output_file.name}")
                 return True
-            console.print("[yellow]ℹ️ No processing performed")
+            console.print("[yellow]No processing performed")
             return True
         except Exception as e:
             logger.error(f"Stage 4 failed: {e}")
-            console.print(f"[red]❌ Stage 4 failed: {e}")
             return False
 
     async def run_full_pipeline(self, stages: str | None = None, continue_after: bool = False) -> bool:
