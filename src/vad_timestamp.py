@@ -54,44 +54,45 @@ class SileroVAD:
             return -np.inf
         return 20 * np.log10(rms)
 
-    def _merge_segments(self, segments: list[dict]) -> list[dict]:
-        """Merge adjacent segments based on gap threshold."""
+    def _merge_and_pad_segments(self, segments: list[dict], audio_duration: float) -> list[dict]:
+        """Merge segments with gap < merge_gap_ms and pad edges, matching reference implementation."""
         if not segments:
-            return segments
+            return []
 
-        merged = [segments[0]]
+        # Sort segments by start time first
+        sorted_segments = sorted(segments, key=lambda x: x["start"])
 
-        for current in segments[1:]:
-            last = merged[-1]
-            gap_ms = (current["start"] - last["end"]) * 1000
+        # Convert thresholds to seconds
+        gap_seconds = self.vad_config.merge_gap_ms / 1000.0
+        pad_seconds = self.vad_config.pad_ms / 1000.0
 
-            if gap_ms <= self.vad_config.merge_gap_ms:
-                # Merge segments
-                merged[-1]["end"] = current["end"]
+        # Merge segments
+        merged = []
+        current = {"start": sorted_segments[0]["start"], "end": sorted_segments[0]["end"], "confidence": sorted_segments[0].get("confidence", 0.0)}
+
+        for segment in sorted_segments[1:]:
+            gap = segment["start"] - current["end"]
+
+            if gap <= gap_seconds:
+                # Merge: extend current segment to include this one
+                current["end"] = max(current["end"], segment["end"])
+                # Keep higher confidence if available
+                if segment.get("confidence", 0.0) > current.get("confidence", 0.0):
+                    current["confidence"] = segment["confidence"]
             else:
+                # Gap too large, finalize current segment and start new one
                 merged.append(current)
+                current = {"start": segment["start"], "end": segment["end"], "confidence": segment.get("confidence", 0.0)}
+
+        # Don't forget the last segment
+        merged.append(current)
+
+        # Apply padding after merging
+        for segment in merged:
+            segment["start"] = max(0, segment["start"] - pad_seconds)
+            segment["end"] = min(audio_duration, segment["end"] + pad_seconds)
 
         return merged
-
-    def _apply_padding(self, segments: list[dict], audio_duration: float) -> list[dict]:
-        """Apply padding to segments while respecting audio boundaries."""
-        if not segments:
-            return segments
-
-        pad_seconds = self.vad_config.pad_ms / 1000.0
-        padded = []
-
-        for segment in segments:
-            start_padded = max(0, segment["start"] - pad_seconds)
-            end_padded = min(audio_duration, segment["end"] + pad_seconds)
-
-            padded.append({
-                "start": start_padded,
-                "end": end_padded,
-                "confidence": segment.get("confidence", 0.0),
-            })
-
-        return padded
 
     def _filter_short_segments(self, segments: list[dict]) -> list[dict]:
         """Filter out segments shorter than minimum duration."""
@@ -131,12 +132,20 @@ class SileroVAD:
             audio_tensor = torch.FloatTensor(audio)
 
             # Calculate frame parameters
-            frame_samples = int(self.vad_config.frame_ms * sample_rate / 1000)
+            frame_samples = max(512, int(self.vad_config.frame_ms * sample_rate / 1000))
             block_samples = int(self.vad_config.block_seconds * sample_rate)
 
-            # Process in blocks
+            # Convert ms to frame counts for hysteresis
+            ms_per_frame = 1000.0 * frame_samples / sample_rate
+            min_speech_frames = max(1, int(round(self.vad_config.min_speech_ms / ms_per_frame)))
+            min_silence_frames = max(1, int(round(self.vad_config.min_silence_ms / ms_per_frame)))
+
+            # State machine with frame counting
             segments = []
-            current_speech_start = None
+            in_speech = False
+            above_cnt = 0
+            below_cnt = 0
+            start_sample = None
 
             for block_start in range(0, len(audio), block_samples):
                 block_end = min(block_start + block_samples, len(audio))
@@ -147,56 +156,61 @@ class SileroVAD:
                     frame_end = min(frame_start + frame_samples, len(block_audio))
                     frame_audio = block_audio[frame_start:frame_end]
 
-                    # Skip if frame is too short - Silero VAD requires minimum 512 samples (32ms at 16kHz)
+                    # Skip if frame is too short
                     if len(frame_audio) < frame_samples:
                         continue
 
-                    # Check RMS gate
-                    frame_time = (block_start + frame_start) / sample_rate
+                    # Calculate frame boundaries in samples
+                    frame_start_sample = block_start + frame_start
+                    frame_end_sample = min(block_start + frame_end, len(audio))
+
+                    # Check RMS gate first
                     rms_dbfs = self._compute_rms_dbfs(frame_audio.numpy())
-
                     if rms_dbfs < self.vad_config.rms_gate_dbfs:
-                        # Frame is too quiet, treat as silence
-                        if current_speech_start is not None:
-                            # End current speech segment
-                            segments.append({
-                                "start": current_speech_start,
-                                "end": frame_time,
-                                "confidence": 0.0,
-                            })
-                            current_speech_start = None
-                        continue
+                        prob = 0.0
+                    else:
+                        # Get VAD probability
+                        prob = self.model(frame_audio, sample_rate).item()
 
-                    # Get VAD probability
-                    speech_prob = self.model(frame_audio, sample_rate).item()
-
-                    # State machine for speech detection
-                    if current_speech_start is None:
-                        # Not in speech
-                        if speech_prob >= self.vad_config.threshold_start:
-                            current_speech_start = frame_time
-                    # In speech
-                    elif speech_prob <= self.vad_config.threshold_end:
-                        # End speech segment
-                        segments.append({
-                            "start": current_speech_start,
-                            "end": frame_time,
-                            "confidence": speech_prob,
-                        })
-                        current_speech_start = None
+                    # State machine with frame counting (hysteresis)
+                    if not in_speech:
+                        if prob >= self.vad_config.threshold_start:
+                            above_cnt += 1
+                            if above_cnt >= min_speech_frames:
+                                # Start speech segment, backtrack to account for counted frames
+                                start_sample = frame_end_sample - above_cnt * frame_samples
+                                in_speech = True
+                                below_cnt = 0
+                        else:
+                            above_cnt = 0
+                    else:
+                        if prob <= self.vad_config.threshold_end:
+                            below_cnt += 1
+                            if below_cnt >= min_silence_frames:
+                                # End speech segment, backtrack to account for counted frames
+                                end_sample = frame_end_sample - below_cnt * frame_samples
+                                segments.append({
+                                    "start": max(0, start_sample) / sample_rate,
+                                    "end": min(end_sample, len(audio)) / sample_rate,
+                                    "confidence": prob,
+                                })
+                                in_speech = False
+                                above_cnt = 0
+                                start_sample = None
+                        else:
+                            below_cnt = 0
 
             # Handle ongoing speech at end
-            if current_speech_start is not None:
+            if in_speech and start_sample is not None:
                 segments.append({
-                    "start": current_speech_start,
+                    "start": max(0, start_sample) / sample_rate,
                     "end": audio_duration,
                     "confidence": 0.0,
                 })
 
             # Post-process segments
             segments = self._filter_short_segments(segments)
-            segments = self._merge_segments(segments)
-            segments = self._apply_padding(segments, audio_duration)
+            segments = self._merge_and_pad_segments(segments, audio_duration)
 
             if progress and task_id is not None:
                 progress.update(task_id, advance=1)

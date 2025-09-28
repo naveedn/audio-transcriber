@@ -24,14 +24,14 @@ class SileroVADConfig(BaseModel):
 
     frame_ms: int = Field(default=32, description="Frame size in milliseconds (>=32)")
     block_seconds: float = Field(default=15.0, description="Streaming block size in seconds")
-    threshold_start: float = Field(default=0.6, description="Start speech probability threshold")
-    threshold_end: float = Field(default=0.4, description="End speech probability threshold")
-    min_speech_ms: int = Field(default=250, description="Minimum speech duration to open segment")
-    min_silence_ms: int = Field(default=200, description="Minimum silence to close segment")
-    merge_gap_ms: int = Field(default=150, description="Merge segments if gap < this")
-    pad_ms: int = Field(default=30, description="Padding for each segment")
-    drop_below_ms: int = Field(default=250, description="Drop segments shorter than this")
-    rms_gate_dbfs: float = Field(default=-45.0, description="RMS silence threshold in dBFS")
+    threshold_start: float = Field(default=0.55, description="Start speech probability threshold")
+    threshold_end: float = Field(default=0.35, description="End speech probability threshold")
+    min_speech_ms: int = Field(default=300, description="Minimum speech duration to open segment")
+    min_silence_ms: int = Field(default=500, description="Minimum silence to close segment")
+    merge_gap_ms: int = Field(default=400, description="Merge segments if gap < this")
+    pad_ms: int = Field(default=100, description="Padding for each segment")
+    drop_below_ms: int = Field(default=200, description="Drop segments shorter than this")
+    rms_gate_dbfs: float = Field(default=-50.0, description="RMS silence threshold in dBFS")
 
 
 class WhisperConfig(BaseModel):
