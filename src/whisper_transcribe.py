@@ -31,27 +31,29 @@ class WhisperTranscriber:
         self.config = config
         self.whisper_config = config.whisper
         self.model = None
+        self.use_mlx = False
+        self.mlx_module = None
 
     def load_model(self) -> None:
-        """Load the MLX Whisper model for Apple Silicon optimization."""
+        """Initialize Whisper implementation (MLX Whisper doesn't require model loading)."""
         try:
             import mlx_whisper
-
-            logger.info(f"Loading MLX Whisper model: {self.whisper_config.model}")
-            self.model = mlx_whisper.load_model(self.whisper_config.model)
-            logger.info("MLX Whisper model loaded successfully")
+            self.mlx_module = mlx_whisper
+            self.use_mlx = True
+            logger.info("MLX Whisper available for Apple Silicon optimization")
 
         except ImportError:
-            logger.warning("MLX Whisper not available, falling back to standard Whisper")
+            logger.warning("⚠️ MLX Whisper not available, falling back to standard Whisper")
             try:
                 import whisper
                 self.model = whisper.load_model(self.whisper_config.model)
+                self.use_mlx = False
                 logger.info("Standard Whisper model loaded successfully")
             except ImportError:
                 msg = "Neither MLX Whisper nor standard Whisper is available"
                 raise ImportError(msg)
         except Exception as e:
-            logger.exception(f"Failed to load Whisper model: {e}")
+            logger.exception(f"Failed to initialize Whisper: {e}")
             raise
 
     def _load_vad_segments(self, vad_path: Path) -> list[dict]:
@@ -88,20 +90,28 @@ class WhisperTranscriber:
     ) -> dict:
         """Transcribe a single audio segment."""
         try:
-            # Ensure model is loaded
-            if self.model is None:
+            # Ensure model is initialized
+            if self.use_mlx and self.mlx_module is None:
+                self.load_model()
+            elif not self.use_mlx and self.model is None:
                 self.load_model()
 
-            # Check if using MLX Whisper or standard Whisper
-            is_mlx = hasattr(self.model, "transcribe") and "mlx" in str(type(self.model))
+            # Apply MLX memory optimization if available
+            if self.use_mlx:
+                try:
+                    import mlx.core as mx
+                    mx.clear_cache()
+                except ImportError:
+                    pass  # MLX core not available, continue without memory management
 
-            if is_mlx:
-                # MLX Whisper
-                result = self.model.transcribe(
+            if self.use_mlx:
+                # MLX Whisper - uses direct function call with model repository
+                result = self.mlx_module.transcribe(
                     audio_segment,
-                    language=self.whisper_config.language,
-                    temperature=self.whisper_config.temperature,
+                    path_or_hf_repo="mlx-community/whisper-small.en-mlx",
                     word_timestamps=True,
+                    temperature=0,
+                    condition_on_previous_text=False,
                 )
             else:
                 # Standard Whisper
@@ -429,10 +439,10 @@ class TranscriptionProcessor:
             errors.append("librosa is not installed")
 
         try:
-            # Test loading the model
+            # Test initializing the transcriber (no longer loads models for MLX)
             self.transcriber.load_model()
         except Exception as e:
-            errors.append(f"Cannot load Whisper model: {e}")
+            errors.append(f"Cannot initialize Whisper: {e}")
 
         return errors
 
