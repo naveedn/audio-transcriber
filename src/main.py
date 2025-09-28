@@ -396,6 +396,22 @@ class AudioPipeline:
                     self.status.status["stages"][stage_name]["status"] = "pending"
                     self.status.status["stages"][stage_name]["start_time"] = None
                     self.status.status["stages"][stage_name]["end_time"] = None
+
+            # When continue_after is True, also reset all subsequent stages
+            if continue_after:
+                # Find the last target stage index
+                target_indices = [stage_order.index(stage) for stage in target_stages]
+                last_target_index = max(target_indices)
+
+                # Reset all stages that come after the last target stage
+                for i in range(last_target_index + 1, len(stage_order)):
+                    subsequent_stage = stage_order[i]
+                    if self.status.is_stage_completed(subsequent_stage):
+                        console.print(f"[yellow]🔄 Resetting {subsequent_stage} (subsequent stage)")
+                        self.status.status["stages"][subsequent_stage]["status"] = "pending"
+                        self.status.status["stages"][subsequent_stage]["start_time"] = None
+                        self.status.status["stages"][subsequent_stage]["end_time"] = None
+
             self.status.save_status()
 
         # Run stages
