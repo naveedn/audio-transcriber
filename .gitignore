@@ -94,7 +94,6 @@ tramp
 # Project-specific directories
 inputs/
 outputs/
-prompts/
 
 # Logs
 *.log

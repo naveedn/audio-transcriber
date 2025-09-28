@@ -1,0 +1,27 @@
+You are an expert transcript editor specializing in merging multi-speaker dialogue segments into a coherent conversation.
+
+Your task is to process a batch of chronologically ordered speech segments and merge them into natural dialogue while:
+
+1. **Resolve Overlapping Speech**: When segments overlap in time, determine which speaker should be primary based on context and clarity
+2. **Merge Adjacent Segments**: Combine segments from the same speaker that are close in time (< 2 seconds apart)
+3. **Fix Minor Transcription Errors**: Correct obvious typos and repeated words
+4. **Maintain Chronological Order**: Keep the conversation flowing naturally in time sequence
+5. **Preserve All Content**: Do not summarize, paraphrase, or remove actual spoken words
+6. **Use Clear Speaker Labels**: Format as SPEAKER_1, SPEAKER_2, etc.
+
+Guidelines:
+- When speakers overlap, choose the clearer or more relevant speech
+- Keep natural speech patterns including filler words (um, uh) when intentional
+- Mark unclear sections with [UNCLEAR] if content cannot be determined
+- Do not add content that wasn't actually spoken
+- Maintain the natural conversation flow
+
+Input Format: Each segment shows [start_time-end_time] SPEAKER: text
+
+Please provide clean, merged dialogue in this format:
+SPEAKER_1: [dialogue content]
+SPEAKER_2: [dialogue content]
+[continue chronologically]
+
+Segments to merge:
+{segments}

@@ -3,8 +3,10 @@
 import json
 import logging
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
+from typing import Dict, List
 
 import openai
 from rich.console import Console
@@ -15,25 +17,70 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 
+class TranscriptSegment:
+    """Represents a single transcript segment with timing and speaker info."""
+
+    def __init__(self, start_time: float, end_time: float, text: str, speaker: str):
+        self.start_time = start_time
+        self.end_time = end_time
+        self.text = text.strip()
+        self.speaker = speaker
+
+    def __str__(self) -> str:
+        return f"[{self.start_time:.1f}s-{self.end_time:.1f}s] {self.speaker}: {self.text}"
+
+
 class TranscriptMerger:
-    """Merges transcripts from multiple speakers into a coherent dialogue."""
+    """Merges transcripts from multiple speakers into a coherent dialogue using batch processing."""
 
     def __init__(self, config: Config) -> None:
         """Initialize the transcript merger."""
         self.config = config
         self.gpt_config = config.gpt
         self.client = openai.OpenAI(api_key=config.openai_api_key)
+        self.merge_prompt_template = self._load_prompt_template()
 
-    def load_transcript(self, transcript_path: Path) -> dict:
-        """Load a transcript from JSON file."""
+    def _load_prompt_template(self) -> str:
+        """Load the merge prompt template from external file."""
+        prompt_file = self.config.paths.prompts_dir / "merge_segments.txt"
+        try:
+            with open(prompt_file, encoding="utf-8") as f:
+                return f.read()
+        except Exception as e:
+            logger.warning(f"Could not load prompt template from {prompt_file}: {e}")
+            # Fallback to simple inline prompt
+            return """Merge these dialogue segments chronologically, resolving any overlaps:
+
+{segments}
+
+Provide clean dialogue in format:
+SPEAKER_1: [content]
+SPEAKER_2: [content]"""
+
+    def load_transcript(self, transcript_path: Path) -> List[TranscriptSegment]:
+        """Load a transcript from JSON file and return segments."""
         try:
             with open(transcript_path, encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+
+            segments = []
+            speaker_name = transcript_path.stem.replace("_transcript", "")
+            transcription = data.get("transcription", {})
+
+            for segment in transcription.get("segments", []):
+                segments.append(TranscriptSegment(
+                    start_time=segment["start"],
+                    end_time=segment["end"],
+                    text=segment["text"],
+                    speaker=speaker_name
+                ))
+
+            return segments
         except Exception as e:
             logger.exception(f"Error loading transcript {transcript_path}: {e}")
-            return {}
+            return []
 
-    def find_transcript_files(self) -> list[Path]:
+    def find_transcript_files(self) -> List[Path]:
         """Find all transcript files to merge."""
         transcript_files = []
 
@@ -48,145 +95,93 @@ class TranscriptMerger:
         logger.info(f"Found {len(transcript_files)} transcript files to merge")
         return sorted(transcript_files)
 
-    def create_timeline_events(self, transcripts: dict[str, dict]) -> list[dict]:
-        """Create a timeline of all speech events from all speakers."""
-        events = []
+    def load_all_segments(self, transcript_files: List[Path]) -> List[TranscriptSegment]:
+        """Load and merge all segments from transcript files."""
+        all_segments = []
 
-        for speaker_name, transcript_data in transcripts.items():
-            transcription = transcript_data.get("transcription", {})
-            segments = transcription.get("segments", [])
+        for transcript_path in transcript_files:
+            segments = self.load_transcript(transcript_path)
+            if segments:
+                all_segments.extend(segments)
+                logger.info(f"Loaded {len(segments)} segments from {transcript_path.name}")
+            else:
+                logger.warning(f"Failed to load segments from {transcript_path}")
 
-            for segment in segments:
-                events.append({
-                    "speaker": speaker_name,
-                    "start_time": segment["start"],
-                    "end_time": segment["end"],
-                    "text": segment["text"].strip(),
-                    "words": segment.get("words", []),
-                })
+        # Sort by start time for chronological processing
+        all_segments.sort(key=lambda x: x.start_time)
+        logger.info(f"Total segments loaded: {len(all_segments)}")
 
-        # Sort by start time
-        events.sort(key=lambda x: x["start_time"])
+        return all_segments
 
-        logger.info(f"Created timeline with {len(events)} speech events")
-        return events
+    def process_batch_with_retry(self, batch: List[TranscriptSegment], max_retries: int = 3) -> str:
+        """Process a batch of segments with retry logic for rate limiting."""
+        segments_text = "\n".join(str(segment) for segment in batch)
+        prompt = self.merge_prompt_template.format(segments=segments_text)
 
-    def detect_overlaps(self, events: list[dict]) -> list[dict]:
-        """Detect and mark overlapping speech segments."""
-        for i, event in enumerate(events):
-            event["overlaps"] = []
+        for attempt in range(max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.gpt_config.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are an expert transcript editor specializing in multi-speaker dialogue merging."
+                        },
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=self.gpt_config.max_tokens,
+                    temperature=self.gpt_config.temperature,
+                )
 
-            # Check for overlaps with subsequent events
-            for _j, other_event in enumerate(events[i+1:], i+1):
-                # Stop checking if the other event starts after this one ends
-                if other_event["start_time"] >= event["end_time"]:
-                    break
+                result = response.choices[0].message.content.strip()
 
-                # Check for overlap
-                if other_event["start_time"] < event["end_time"]:
-                    overlap_start = max(event["start_time"], other_event["start_time"])
-                    overlap_end = min(event["end_time"], other_event["end_time"])
-                    overlap_duration = overlap_end - overlap_start
+                return result
 
-                    if overlap_duration > 0.1:  # Minimum 100ms overlap
-                        event["overlaps"].append({
-                            "speaker": other_event["speaker"],
-                            "overlap_start": overlap_start,
-                            "overlap_end": overlap_end,
-                            "overlap_duration": overlap_duration,
-                        })
+            except openai.RateLimitError as e:
+                wait_time = 2 ** attempt  # Exponential backoff
+                logger.warning(f"Rate limit hit, waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
+                time.sleep(wait_time)
 
-        return events
+            except Exception as e:
+                logger.error(f"Error processing batch (attempt {attempt + 1}): {e}")
+                if attempt == max_retries - 1:
+                    # Return original segments as fallback
+                    fallback = "\n".join(f"{seg.speaker}: {seg.text}" for seg in batch)
+                    return fallback
+                time.sleep(1)
 
-    def format_timeline_for_gpt(self, events: list[dict]) -> str:
-        """Format the timeline events for GPT processing."""
-        lines = []
-        lines.append("TRANSCRIPT TIMELINE")
-        lines.append("==================")
-        lines.append("")
+        # Final fallback
+        return "\n".join(f"{seg.speaker}: {seg.text}" for seg in batch)
 
-        for event in events:
-            timestamp = f"[{event['start_time']:.1f}s - {event['end_time']:.1f}s]"
-            speaker = event["speaker"].upper()
-            text = event["text"]
+    def merge_segments_in_batches(self, segments: List[TranscriptSegment], batch_size: int = 12) -> str:
+        """Process segments in batches to avoid token limits and rate limiting."""
+        merged_parts = []
+        total_batches = (len(segments) + batch_size - 1) // batch_size
 
-            # Add overlap information if present
-            overlap_info = ""
-            if event.get("overlaps"):
-                overlap_speakers = [o["speaker"] for o in event["overlaps"]]
-                overlap_info = f" (OVERLAPS: {', '.join(overlap_speakers)})"
+        console.print(f"[blue]Processing {len(segments)} segments in {total_batches} batches...")
 
-            lines.append(f"{timestamp} {speaker}{overlap_info}: {text}")
+        for i in range(0, len(segments), batch_size):
+            batch = segments[i:i + batch_size]
+            batch_num = i // batch_size + 1
 
-        return "\n".join(lines)
+            console.print(f"[blue]Processing batch {batch_num}/{total_batches} ({len(batch)} segments)...")
 
-    def create_merge_prompt(self, timeline: str) -> str:
-        """Create the prompt for GPT to merge and clean up the transcript."""
-        return f"""You are an expert transcript editor tasked with creating a clean, accurate dialogue from multiple speaker transcripts.
+            merged_batch = self.process_batch_with_retry(batch)
+            if merged_batch:
+                merged_parts.append(merged_batch)
 
-Your task is to:
-1. Merge the timeline into a coherent conversation
-2. Resolve overlapping speech (marked with OVERLAPS) by determining who was speaking
-3. Fix any obvious transcription errors or artifacts
-4. Maintain the natural flow of conversation
-5. Preserve all actual spoken content - do not summarize or paraphrase
-6. Use clear speaker labels (SPEAKER_1, SPEAKER_2, etc.)
-7. Format as a clean dialogue transcript
+            # Progress update
+            if batch_num % 5 == 0:
+                console.print(f"[green]Completed {batch_num}/{total_batches} batches")
 
-Guidelines:
-- When speakers overlap, choose the primary speaker based on context
-- Fix obvious transcription errors (repeated words, nonsense phrases)
-- Keep filler words (um, uh) if they seem intentional
-- Mark unclear sections with [UNCLEAR] if you cannot determine the content
-- Do not add content that wasn't spoken
-- Maintain chronological order
-
-Input Timeline:
-{timeline}
-
-Please provide a clean, merged transcript in this format:
-
-SPEAKER_1: [dialogue content]
-SPEAKER_2: [dialogue content]
-[continue chronologically]
-
-Clean Merged Transcript:"""
-
-    def process_with_gpt(self, timeline: str) -> str:
-        """Process the timeline with GPT to create a merged transcript."""
-        try:
-            prompt = self.create_merge_prompt(timeline)
-
-            response = self.client.chat.completions.create(
-                model=self.gpt_config.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert transcript editor specializing in multi-speaker dialogue cleanup and merging.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=self.gpt_config.max_tokens,
-                temperature=self.gpt_config.temperature,
-            )
-
-            merged_transcript = response.choices[0].message.content.strip()
-
-            # Remove the "Clean Merged Transcript:" header if present
-            if "Clean Merged Transcript:" in merged_transcript:
-                merged_transcript = merged_transcript.split("Clean Merged Transcript:", 1)[1].strip()
-
-            return merged_transcript
-
-        except Exception as e:
-            logger.exception(f"Error processing with GPT: {e}")
-            return ""
+        # Combine all merged parts
+        final_transcript = "\n\n".join(merged_parts)
+        return final_transcript
 
     def save_merged_transcript(
         self,
         merged_content: str,
-        timeline_events: list[dict],
-        transcripts: dict[str, dict],
+        segments: List[TranscriptSegment],
         output_path: Path,
     ) -> None:
         """Save the merged transcript with metadata."""
@@ -195,14 +190,14 @@ Clean Merged Transcript:"""
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
             # Create metadata
+            speakers = sorted(set(seg.speaker for seg in segments))
             metadata = {
                 "merged_transcript": merged_content,
-                "original_speakers": list(transcripts.keys()),
-                "total_events": len(timeline_events),
+                "original_speakers": speakers,
+                "total_segments": len(segments),
                 "processing_timestamp": datetime.now().isoformat(),
                 "model_used": self.gpt_config.model,
                 "source_files": [str(f) for f in self.find_transcript_files()],
-                "timeline_events": timeline_events,  # Include for debugging
             }
 
             # Save JSON
@@ -220,7 +215,7 @@ Clean Merged Transcript:"""
         except Exception as e:
             logger.exception(f"Error saving merged transcript: {e}")
 
-    def merge_transcripts(self, transcript_files: list[Path] | None = None) -> Path | None:
+    def merge_transcripts(self, transcript_files: List[Path] | None = None) -> Path | None:
         """Main method to merge all transcripts."""
         if transcript_files is None:
             transcript_files = self.find_transcript_files()
@@ -235,37 +230,15 @@ Clean Merged Transcript:"""
 
         console.print(f"[blue]Merging {len(transcript_files)} transcript files...")
 
-        # Load all transcripts
-        transcripts = {}
-        for transcript_path in transcript_files:
-            speaker_name = transcript_path.stem.replace("_transcript", "")
-            transcript_data = self.load_transcript(transcript_path)
+        # Load all segments
+        all_segments = self.load_all_segments(transcript_files)
 
-            if transcript_data:
-                transcripts[speaker_name] = transcript_data
-            else:
-                logger.warning(f"Failed to load transcript: {transcript_path}")
-
-        if not transcripts:
-            logger.error("No valid transcripts loaded")
+        if not all_segments:
+            logger.error("No segments loaded from transcript files")
             return None
 
-        # Create timeline
-        timeline_events = self.create_timeline_events(transcripts)
-
-        if not timeline_events:
-            logger.error("No speech events found in transcripts")
-            return None
-
-        # Detect overlaps
-        timeline_events = self.detect_overlaps(timeline_events)
-
-        # Format for GPT
-        timeline_text = self.format_timeline_for_gpt(timeline_events)
-
-        # Process with GPT
-        console.print("[blue]Processing with GPT...")
-        merged_content = self.process_with_gpt(timeline_text)
+        # Process in batches
+        merged_content = self.merge_segments_in_batches(all_segments)
 
         if not merged_content:
             logger.error("GPT processing failed")
@@ -273,14 +246,12 @@ Clean Merged Transcript:"""
 
         # Save result
         output_path = self.config.paths.gpt_dir / "merged_transcript"
-        self.save_merged_transcript(
-            merged_content, timeline_events, transcripts, output_path,
-        )
+        self.save_merged_transcript(merged_content, all_segments, output_path)
 
         console.print("[green]Transcript merging complete!")
         return output_path.with_suffix(".txt")
 
-    def check_dependencies(self) -> list[str]:
+    def check_dependencies(self) -> List[str]:
         """Check if required dependencies are available."""
         errors = []
 
@@ -296,7 +267,7 @@ Clean Merged Transcript:"""
         return errors
 
 
-def merge_transcripts(config: Config, transcript_files: list[Path] | None = None) -> Path | None:
+def merge_transcripts(config: Config, transcript_files: List[Path] | None = None) -> Path | None:
     """Main function to merge transcript files."""
     merger = TranscriptMerger(config)
 
@@ -337,7 +308,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        default="gpt-4",
+        default="gpt-4-turbo",
         help="GPT model to use",
     )
 

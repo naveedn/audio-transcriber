@@ -2,9 +2,10 @@
 
 import json
 import logging
-import re
+import time
 from datetime import datetime
 from pathlib import Path
+from typing import List
 
 import openai
 from rich.console import Console
@@ -16,13 +17,29 @@ logger = logging.getLogger(__name__)
 
 
 class TranscriptCleaner:
-    """Cleans and formats transcripts using GPT for final polish."""
+    """Cleans and formats transcripts using GPT with batch processing like the working reference."""
 
     def __init__(self, config: Config):
         """Initialize the transcript cleaner."""
         self.config = config
         self.gpt_config = config.gpt
         self.client = openai.OpenAI(api_key=config.openai_api_key)
+        self.cleanup_prompt_template = self._load_prompt_template()
+
+    def _load_prompt_template(self) -> str:
+        """Load the cleanup prompt template from external file."""
+        prompt_file = self.config.paths.prompts_dir / "cleanup_transcript.txt"
+        try:
+            with open(prompt_file, encoding="utf-8") as f:
+                return f.read()
+        except Exception as e:
+            logger.warning(f"Could not load prompt template from {prompt_file}: {e}")
+            # Fallback to simple inline prompt
+            return """Fix spelling, grammar, and formatting in this transcript while preserving all content:
+
+{transcript}
+
+Provide cleaned transcript in same format:"""
 
     def load_merged_transcript(self, transcript_path: Path) -> str:
         """Load the merged transcript from file."""
@@ -38,131 +55,126 @@ class TranscriptCleaner:
             logger.error(f"Error loading transcript {transcript_path}: {e}")
             return ""
 
-    def create_cleanup_prompt(self, transcript: str) -> str:
-        """Create the prompt for GPT to clean up the transcript."""
-        return f"""You are an expert transcript editor tasked with creating a final, polished version of this dialogue transcript. Your goal is to produce a clean, readable, and accurate transcript that maintains all original content while improving readability and fixing errors.
+    def split_transcript_into_batches(self, transcript: str, batch_size: int = 10) -> List[str]:
+        """Split transcript into batches of dialogue lines for processing."""
+        lines = [line.strip() for line in transcript.split("\n") if line.strip()]
 
-Please perform the following cleanup tasks:
+        batches = []
+        for i in range(0, len(lines), batch_size):
+            batch_lines = lines[i:i + batch_size]
+            # Format with numbering like the working reference
+            numbered_lines = [f"{j+1}. {line}" for j, line in enumerate(batch_lines)]
+            batches.append("\n".join(numbered_lines))
 
-1. **Hallucination Detection**: Flag any content that seems disconnected from natural conversation flow or appears to be AI-generated artifacts
-2. **Grammar and Punctuation**: Fix grammar errors and add appropriate punctuation while preserving the natural speech patterns
-3. **Speaker Consistency**: Ensure speaker labels are consistent throughout (use SPEAKER_1, SPEAKER_2, etc.)
-4. **Remove Artifacts**: Clean up obvious transcription errors like:
-   - Repeated words or phrases that don't make sense
-   - Random characters or symbols
-   - Fragmented sentences that should be combined
-5. **Formatting**: Ensure consistent formatting and proper paragraph breaks
-6. **Preserve Content**: Do NOT summarize, paraphrase, or remove actual spoken content
-7. **Mark Uncertainties**: Use [UNCLEAR] for sections where the content is genuinely unclear
-8. **Natural Flow**: Ensure the conversation flows naturally and makes sense
+        return batches
 
-Guidelines:
-- Keep all filler words (um, uh, well) that seem intentional
-- Preserve interruptions and overlaps that are meaningful
-- Fix obvious errors but don't over-edit natural speech patterns
-- Flag potential hallucinations with [POSSIBLE HALLUCINATION: reason]
-- Maintain chronological order
-- Use clear speaker identification
+    def process_batch_with_retry(self, batch: str, max_retries: int = 3) -> str:
+        """Process a batch with retry logic for rate limiting."""
+        prompt = self.cleanup_prompt_template.format(transcript=batch)
 
-Input Transcript:
-{transcript}
+        for attempt in range(max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.gpt_config.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are an expert transcript editor specializing in cleaning and polishing dialogue transcripts while preserving all original content."
+                        },
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=self.gpt_config.max_tokens,
+                    temperature=self.gpt_config.temperature,
+                )
 
-Please provide the cleaned transcript below:
+                result = response.choices[0].message.content.strip()
 
-CLEANED TRANSCRIPT:"""
+                return result
 
-    def process_in_chunks(self, transcript: str) -> str:
-        """Process large transcripts in chunks to avoid token limits."""
-        # Split transcript into manageable chunks
-        lines = transcript.split("\n")
-        chunks = []
-        current_chunk = []
-        current_length = 0
+            except openai.RateLimitError as e:
+                wait_time = 2 ** attempt  # Exponential backoff
+                logger.warning(f"Rate limit hit, waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
+                time.sleep(wait_time)
 
-        max_chunk_length = self.gpt_config.chunk_size
+            except Exception as e:
+                logger.error(f"Error processing batch (attempt {attempt + 1}): {e}")
+                if attempt == max_retries - 1:
+                    # Return original batch as fallback
+                    return batch
+                time.sleep(1)
 
-        for line in lines:
-            line_length = len(line)
+        # Final fallback
+        return batch
 
-            if current_length + line_length > max_chunk_length and current_chunk:
-                # Start new chunk
-                chunks.append("\n".join(current_chunk))
-                current_chunk = [line]
-                current_length = line_length
-            else:
-                current_chunk.append(line)
-                current_length += line_length
-
-        # Add the last chunk
-        if current_chunk:
-            chunks.append("\n".join(current_chunk))
-
-        logger.info(f"Split transcript into {len(chunks)} chunks for processing")
-
-        # Process each chunk
-        cleaned_chunks = []
-        for i, chunk in enumerate(chunks):
-            console.print(f"[blue]Processing chunk {i+1}/{len(chunks)}...")
-            cleaned_chunk = self.process_with_gpt(chunk)
-            if cleaned_chunk:
-                cleaned_chunks.append(cleaned_chunk)
-            else:
-                logger.warning(f"Failed to process chunk {i+1}")
-                cleaned_chunks.append(chunk)  # Keep original if processing fails
-
-        return "\n\n".join(cleaned_chunks)
-
-    def process_with_gpt(self, transcript: str) -> str:
-        """Process the transcript with GPT for cleanup."""
+    def parse_cleaned_batch(self, cleaned_response: str, original_lines: List[str]) -> List[str]:
+        """Parse the cleaned response back to individual lines."""
         try:
-            prompt = self.create_cleanup_prompt(transcript)
+            cleaned_lines = []
+            response_lines = [line.strip() for line in cleaned_response.split("\n") if line.strip()]
 
-            response = self.client.chat.completions.create(
-                model=self.gpt_config.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert transcript editor specializing in cleaning and polishing dialogue transcripts while preserving all original content and detecting potential transcription errors or hallucinations.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=self.gpt_config.max_tokens,
-                temperature=self.gpt_config.temperature,
-            )
+            for i, line in enumerate(response_lines):
+                # Try to extract content after numbering (1. SPEAKER: content)
+                import re
+                match = re.match(r'^\d+\.\s*(.+)$', line)
+                if match:
+                    cleaned_lines.append(match.group(1).strip())
+                else:
+                    # Fallback to original if parsing fails
+                    if i < len(original_lines):
+                        cleaned_lines.append(original_lines[i])
+                    else:
+                        cleaned_lines.append(line)
 
-            cleaned_transcript = response.choices[0].message.content.strip()
+            # Ensure we have the same number of lines
+            while len(cleaned_lines) < len(original_lines):
+                cleaned_lines.append(original_lines[len(cleaned_lines)])
 
-            # Remove the "CLEANED TRANSCRIPT:" header if present
-            if "CLEANED TRANSCRIPT:" in cleaned_transcript:
-                cleaned_transcript = cleaned_transcript.split("CLEANED TRANSCRIPT:", 1)[1].strip()
-
-            return cleaned_transcript
+            return cleaned_lines[:len(original_lines)]
 
         except Exception as e:
-            logger.error(f"Error processing with GPT: {e}")
-            return ""
+            logger.error(f"Error parsing cleaned batch: {e}")
+            return original_lines
 
-    def extract_hallucination_flags(self, cleaned_transcript: str) -> tuple[str, list[str]]:
-        """Extract and catalog any hallucination flags from the cleaned transcript."""
-        hallucination_pattern = r"\[POSSIBLE HALLUCINATION: ([^\]]+)\]"
+    def process_transcript_in_batches(self, transcript: str, batch_size: int = 10) -> str:
+        """Process transcript in small batches like the working reference."""
+        lines = [line.strip() for line in transcript.split("\n") if line.strip()]
+        total_lines = len(lines)
 
-        hallucinations = []
-        for match in re.finditer(hallucination_pattern, cleaned_transcript):
-            hallucinations.append(match.group(1))
+        if total_lines == 0:
+            return transcript
 
-        # Remove the flags from the final transcript
-        final_transcript = re.sub(hallucination_pattern, "[FLAGGED CONTENT]", cleaned_transcript)
+        console.print(f"[blue]Processing {total_lines} lines in batches of {batch_size}...")
 
-        return final_transcript, hallucinations
+        cleaned_lines = []
+        total_batches = (total_lines + batch_size - 1) // batch_size
 
-    def generate_quality_report(self, original: str, cleaned: str, hallucinations: list[str]) -> dict:
-        """Generate a quality report comparing original and cleaned transcripts."""
+        for i in range(0, total_lines, batch_size):
+            batch_lines = lines[i:i + batch_size]
+            batch_num = i // batch_size + 1
+
+            # Create numbered batch for processing
+            numbered_batch = "\n".join(f"{j+1}. {line}" for j, line in enumerate(batch_lines))
+
+            console.print(f"[blue]Processing batch {batch_num}/{total_batches} ({len(batch_lines)} lines)...")
+
+            cleaned_batch = self.process_batch_with_retry(numbered_batch)
+            parsed_lines = self.parse_cleaned_batch(cleaned_batch, batch_lines)
+
+            cleaned_lines.extend(parsed_lines)
+
+            # Progress update every 5 batches
+            if batch_num % 5 == 0:
+                console.print(f"[green]Completed {batch_num}/{total_batches} batches")
+
+        return "\n".join(cleaned_lines)
+
+    def generate_quality_report(self, original: str, cleaned: str) -> dict:
+        """Generate a simple quality report."""
         original_lines = [line.strip() for line in original.split("\n") if line.strip()]
         cleaned_lines = [line.strip() for line in cleaned.split("\n") if line.strip()]
 
         # Count unclear sections
         unclear_count = cleaned.count("[UNCLEAR]")
-        flagged_count = cleaned.count("[FLAGGED CONTENT]")
 
         # Estimate word counts
         original_words = len(original.split())
@@ -174,9 +186,6 @@ CLEANED TRANSCRIPT:"""
             "original_word_count": original_words,
             "cleaned_word_count": cleaned_words,
             "unclear_sections": unclear_count,
-            "flagged_sections": flagged_count,
-            "hallucinations_detected": len(hallucinations),
-            "hallucination_details": hallucinations,
             "processing_timestamp": datetime.now().isoformat(),
         }
 
@@ -189,7 +198,7 @@ CLEANED TRANSCRIPT:"""
         quality_report: dict,
         output_path: Path,
     ) -> None:
-        """Save the cleaned transcript with metadata and quality report."""
+        """Save the cleaned transcript with metadata."""
         try:
             # Ensure output directory exists
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -201,7 +210,6 @@ CLEANED TRANSCRIPT:"""
                 "processing_details": {
                     "model_used": self.gpt_config.model,
                     "processing_timestamp": datetime.now().isoformat(),
-                    "chunk_size": self.gpt_config.chunk_size,
                     "temperature": self.gpt_config.temperature,
                 },
                 "original_content": original_content,  # Keep for comparison
@@ -229,7 +237,7 @@ CLEANED TRANSCRIPT:"""
             logger.error(f"Error saving cleaned transcript: {e}")
 
     def clean_transcript(self, input_path: Path | None = None) -> Path | None:
-        """Main method to clean a transcript."""
+        """Main method to clean a transcript using batch processing."""
         if input_path is None:
             # Look for merged transcript
             merged_file = self.config.paths.gpt_dir / "merged_transcript.txt"
@@ -250,42 +258,32 @@ CLEANED TRANSCRIPT:"""
             logger.error("Failed to load transcript content")
             return None
 
-        # Process with GPT (in chunks if necessary)
-        if len(original_content) > self.gpt_config.chunk_size:
-            console.print("[blue]Large transcript detected, processing in chunks...")
-            cleaned_content = self.process_in_chunks(original_content)
-        else:
-            console.print("[blue]Processing with GPT...")
-            cleaned_content = self.process_with_gpt(original_content)
+        # Process in batches (always use batch processing like working reference)
+        console.print("[blue]Processing transcript in batches...")
+        cleaned_content = self.process_transcript_in_batches(original_content)
 
         if not cleaned_content:
             logger.error("GPT processing failed")
             return None
 
-        # Extract hallucination flags
-        final_content, hallucinations = self.extract_hallucination_flags(cleaned_content)
-
         # Generate quality report
-        quality_report = self.generate_quality_report(
-            original_content, final_content, hallucinations,
-        )
+        quality_report = self.generate_quality_report(original_content, cleaned_content)
 
         # Log quality metrics
         console.print("[green]Cleanup complete!")
         console.print(f"  Word count: {quality_report['original_word_count']} → {quality_report['cleaned_word_count']}")
+        console.print(f"  Line count: {quality_report['original_line_count']} → {quality_report['cleaned_line_count']}")
         console.print(f"  Unclear sections: {quality_report['unclear_sections']}")
-        console.print(f"  Flagged sections: {quality_report['flagged_sections']}")
-        console.print(f"  Hallucinations detected: {quality_report['hallucinations_detected']}")
 
         # Save result
         output_path = self.config.paths.gpt_dir / "final_transcript"
         self.save_cleaned_transcript(
-            final_content, original_content, quality_report, output_path,
+            cleaned_content, original_content, quality_report, output_path,
         )
 
         return output_path.with_suffix(".txt")
 
-    def check_dependencies(self) -> list[str]:
+    def check_dependencies(self) -> List[str]:
         """Check if required dependencies are available."""
         errors = []
 
@@ -341,7 +339,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        default="gpt-4",
+        default="gpt-4-turbo",
         help="GPT model to use",
     )
 
