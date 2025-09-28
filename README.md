@@ -79,6 +79,9 @@ uv run transcribe run-stage preprocess
 # Reset pipeline status
 uv run transcribe reset
 
+# Clean everything (reset + remove all inputs and outputs)
+uv run transcribe clean
+
 # Get help
 uv run transcribe --help
 ```
@@ -234,6 +237,9 @@ uv run transcribe status
 
 # Reset if pipeline is in bad state
 uv run transcribe reset
+
+# Clean everything (reset + remove all files) for fresh start
+uv run transcribe clean
 ```
 
 ## 📄 License

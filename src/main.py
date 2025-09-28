@@ -516,6 +516,48 @@ def reset(ctx):
 
 
 @cli.command()
+@click.confirmation_option(
+    prompt="Are you sure you want to delete all inputs and outputs?"
+)
+@click.pass_context
+def clean(ctx) -> None:
+    """Reset pipeline and remove all inputs and outputs."""
+    import shutil
+
+    config = ctx.obj["config"]
+
+    console.print("🧹 Cleaning pipeline...")
+
+    # Reset pipeline status first
+    if config.paths.status_file.exists():
+        config.paths.status_file.unlink()
+        console.print("[green]✅ Pipeline status reset")
+
+    # Remove all output directories and their contents
+    output_dirs = [
+        config.paths.outputs_dir,
+        config.paths.audio_wav_dir,
+        config.paths.silero_dir,
+        config.paths.whisper_dir,
+        config.paths.gpt_dir,
+    ]
+
+    for dir_path in output_dirs:
+        if dir_path.exists():
+            shutil.rmtree(dir_path)
+            console.print(f"[green]✅ Removed: {dir_path}")
+
+    # Remove all input files (but keep the directory)
+    if config.paths.inputs_dir.exists():
+        for file_path in config.paths.inputs_dir.iterdir():
+            if file_path.is_file():
+                file_path.unlink()
+                console.print(f"[green]✅ Removed: {file_path}")
+
+    console.print("[green]✅ Clean completed - all inputs and outputs removed")
+
+
+@cli.command()
 @click.pass_context
 def validate(ctx):
     """Validate configuration and dependencies."""
