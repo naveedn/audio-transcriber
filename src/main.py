@@ -21,7 +21,6 @@ from .config import Config, load_config
 # Import stage modules with corrected names
 from .ffmpeg_preprocess import preprocess_audio
 from .gpt_cleanup import cleanup_transcript
-from .gpt_merge import merge_transcripts
 from .vad_timestamp import process_vad
 from .whisper_transcribe import transcribe_audio
 
@@ -54,8 +53,7 @@ class PipelineStatus:
                 "stage1_preprocess": {"status": "pending", "start_time": None, "end_time": None},
                 "stage2_vad": {"status": "pending", "start_time": None, "end_time": None},
                 "stage3_whisper": {"status": "pending", "start_time": None, "end_time": None},
-                "stage4a_merge": {"status": "pending", "start_time": None, "end_time": None},
-                "stage4b_cleanup": {"status": "pending", "start_time": None, "end_time": None},
+                "stage4_process": {"status": "pending", "start_time": None, "end_time": None},
             },
         }
 
@@ -88,7 +86,7 @@ class PipelineStatus:
         """Get the next stage to run for resuming."""
         stage_order = [
             "stage0_bootstrap", "stage1_preprocess", "stage2_vad",
-            "stage3_whisper", "stage4a_merge", "stage4b_cleanup",
+            "stage3_whisper", "stage4_process",
         ]
 
         for stage in stage_order:
@@ -110,8 +108,7 @@ class PipelineStatus:
             "stage1_preprocess": "1. Audio Preprocessing",
             "stage2_vad": "2. Voice Activity Detection",
             "stage3_whisper": "3. Speech Transcription",
-            "stage4a_merge": "4a. Transcript Merging",
-            "stage4b_cleanup": "4b. Final Cleanup",
+            "stage4_process": "4. Final Processing",
         }
 
         for stage_id, info in self.status["stages"].items():
@@ -199,9 +196,9 @@ class AudioPipeline:
 
             # Check OpenAI API
             if self.config.openai_api_key:
-                from .gpt_merge import TranscriptMerger
-                merger = TranscriptMerger(self.config)
-                errors = merger.check_dependencies()
+                from .gpt_cleanup import TranscriptProcessor
+                processor = TranscriptProcessor(self.config)
+                errors = processor.check_dependencies()
                 if errors:
                     for error in errors:
                         console.print(f"[red]❌ OpenAI API: {error}")
@@ -266,32 +263,13 @@ class AudioPipeline:
             console.print(f"[red]❌ Stage 3 failed: {e}")
             return False
 
-    def run_stage4a(self) -> bool:
-        """Stage 4a: Transcript merging."""
-        console.print(Panel("🔀 Stage 4a: Transcript Merging", style="bold blue"))
+
+    def run_stage4(self) -> bool:
+        """Stage 4: Final processing."""
+        console.print(Panel("✨ Stage 4: Final Processing", style="bold blue"))
 
         if not self.config.openai_api_key:
-            console.print("[yellow]⚠️ Skipping merge - no OpenAI API key")
-            return True
-
-        try:
-            output_file = merge_transcripts(self.config)
-            if output_file:
-                console.print(f"[green]✅ Merged transcript created: {output_file.name}")
-                return True
-            console.print("[yellow]ℹ️ No merging performed (single speaker or no transcripts)")
-            return True
-        except Exception as e:
-            logger.error(f"Stage 4a failed: {e}")
-            console.print(f"[red]❌ Stage 4a failed: {e}")
-            return False
-
-    def run_stage4b(self) -> bool:
-        """Stage 4b: Final cleanup."""
-        console.print(Panel("✨ Stage 4b: Final Cleanup", style="bold blue"))
-
-        if not self.config.openai_api_key:
-            console.print("[yellow]⚠️ Skipping cleanup - no OpenAI API key")
+            console.print("[yellow]⚠️ Skipping processing - no OpenAI API key")
             return True
 
         try:
@@ -299,11 +277,11 @@ class AudioPipeline:
             if output_file:
                 console.print(f"[green]✅ Final transcript created: {output_file.name}")
                 return True
-            console.print("[yellow]ℹ️ No cleanup performed")
+            console.print("[yellow]ℹ️ No processing performed")
             return True
         except Exception as e:
-            logger.error(f"Stage 4b failed: {e}")
-            console.print(f"[red]❌ Stage 4b failed: {e}")
+            logger.error(f"Stage 4 failed: {e}")
+            console.print(f"[red]❌ Stage 4 failed: {e}")
             return False
 
     async def run_full_pipeline(self, stages: str | None = None, continue_after: bool = False) -> bool:
@@ -316,8 +294,7 @@ class AudioPipeline:
             "preprocess": "stage1_preprocess",
             "vad": "stage2_vad",
             "whisper": "stage3_whisper",
-            "merge": "stage4a_merge",
-            "cleanup": "stage4b_cleanup",
+            "process": "stage4_process",
         }
 
         # Parse stages parameter
@@ -362,14 +339,13 @@ class AudioPipeline:
             "stage1_preprocess": self.run_stage1,
             "stage2_vad": self.run_stage2,
             "stage3_whisper": self.run_stage3,
-            "stage4a_merge": self.run_stage4a,
-            "stage4b_cleanup": self.run_stage4b,
+            "stage4_process": self.run_stage4,
         }
 
         # Get ordered list of stages to run
         stage_order = [
             "stage0_bootstrap", "stage1_preprocess", "stage2_vad",
-            "stage3_whisper", "stage4a_merge", "stage4b_cleanup",
+            "stage3_whisper", "stage4_process",
         ]
 
         start_index = stage_order.index(start_stage)
@@ -495,7 +471,7 @@ def cli(ctx, verbose: bool, config_file: Path | None):
 
 
 @cli.command()
-@click.option("--stage", help="Comma-separated list of stages to run (bootstrap,preprocess,vad,whisper,merge,cleanup)")
+@click.option("--stage", help="Comma-separated list of stages to run (bootstrap,preprocess,vad,whisper,process)")
 @click.option("--continue", "continue_after", is_flag=True, help="Continue to next stages after specified stages complete")
 @click.pass_context
 def run(ctx, stage: str | None, continue_after: bool):

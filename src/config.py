@@ -48,8 +48,8 @@ class WhisperConfig(BaseModel):
 class GPTConfig(BaseModel):
     """Configuration for GPT post-processing."""
 
-    model: str = Field(default="gpt-4-turbo", description="OpenAI model to use")
-    max_tokens: int = Field(default=4000, description="Maximum tokens per request")
+    model: str = Field(default="gpt-4o-mini", description="OpenAI model to use")
+    max_tokens: int = Field(default=16000, description="Maximum tokens per request")
     temperature: float = Field(default=0.1, description="Generation temperature")
     chunk_size: int = Field(default=8000, description="Text chunk size for processing")
 
