@@ -1,0 +1,151 @@
+# Audio Processing Pipeline Specification
+
+## Executive Summary 
+
+You are an AI engineer specializing in production-grade LLM applications, generative AI systems, and intelligent agent architectures. You have deep knowledge of the Python programming language, specializing in modern Python 3.11+ development with cutting-edge tools and practices from the 2024/2025 ecosystem, including package management with uv, code quality with ruff, and building high-performance applications with async patterns.
+
+You are going to build a cli-based speech-to-text transcription application that is optimized for the Apple Silicon ecosystem (e.g. Mac M1 Pro). The purpose of this program is to take a multi-track recording comprised of separate audio files and output a transcript file that can be used as an accurate historical reference.
+
+There is prototype code from an exploration stored in a folder `/Users/naveednadjmabadi/code/dnd-podcast-transcriber/audio-processing-pipeline`. You may reference those files if necessary, but they are incomplete and messy. 
+
+###  🏗️ Architectural Goals
+- **Modern**: Designed for Apple Silicon and using the latest developer tooling available
+- **Fast**: Can process 3-hour multi-track recording in ≤20 minutes, with expected throughput 20x real-time speed
+- **High Quality**: Maintain high accuracy with speaker identification and timestamps
+- **Modular Design**: Each stage is independent and can be developed/tested separately. **Debuggable**: Can inspect intermediate outputs at each stage. 
+- **Flexible**: Flexibility is provided via configuration and command-line flags so that the tool can be adopted for different scenarios. The tool uses sensible defaults from a known good configuration.
+- **Resumable**: Can restart from any stage if previous stages are complete
+### Tech Stack
+- Python version 3.11.13
+- uv as a package manager, ruff for linting
+- git-lfs, for storing large audio files.
+- ffmpeg + librosa for audio file processing
+- [dot-env](https://pypi.org/project/python-dotenv/) for managing API keys (openAI and huggingface)
+- [silero-vad](https://github.com/snakers4/silero-vad) for voice activation detection
+- [mlx-whisper-small](https://huggingface.co/mlx-community/whisper-small-mlx) for speech-to-text processing
+- openai (chatGPT5) for generalized text processing 
+
+## 📊 Pipeline Overview
+
+The system architecture contains a multi-stage batch processing pipeline for the audio files. Each stage is an independent, isolated module that builds upon the previous stage's output.
+
+```
+Audio Files → [Stage 0] → [Stage 1] → [Stage 2] → [Stage 3] → [Stage 4] → Final Transcript
+              Bootstrap   preprocess  Silero     Whisper      GPT
+```
+
+## 🔄 Multi-Stage Process
+
+### Stage 0: **Bootstrapping process**
+**Downloading ML / LLM Models**
+- **Input**: None
+- **Purpose:** Check if model files are locally installed, and if not, download all dependencies prior to processing. Check env files to make sure external APIs can be called.
+- **Technology:** Hugging-face
+- **Output:** None
+
+### Stage 1: **Audio Preprocess**
+**Audio File Conversion**
+- **Input**: Raw flac audio files (`inputs/<speaker-name-audio-track>.flac`)
+- **Purpose**: each audio track is converted from flac into a 16kHz mono 16-bit wav files wav file using ffmpeg. This task can be done in parallel using sub-processes
+- **Technology**: ffmpeg
+- **Output**: Cleaned audio files (`outputs/audio-files-wav/<speaker-name-audio-track>.wav`). Use filename before extension as the speaker label.
+
+### Stage 2: **silero VAD**
+**Speech Detection & Segmentation**
+- **Input**: Cleaned audio files (`outputs/audio-files-wav/`)
+- **Purpose**: Detect speech segments and filter out silence/noise. Merge adjacent segments with word-level timestamps as a post-processing step. This task is done in parallel, one sub-process for each input audio file.
+- **Technology**: Silero VAD (Voice Activity Detection)
+- **Output**: A json file with speech timestamps and segmented audio chunks.
+
+### Stage 3: **whisper transcribe**
+**Speech-to-Text Transcription**
+- **Input**: Speech segments from Stage 2, and audio files from Stage 1
+- **Purpose**: Convert speech to text with timing information. This task is done sequentially per file, to ensure the audio processing program operates within the Macbook's memory limits. Merge adjacent segments as sentence-level segments as a post-processing step.
+- **Technology**: OpenAI Whisper (or other Whisper implementations)
+- **Output**: Raw transcripts with word-level timestamps. Output both JSON (machine-readable) and .srt (human-readable).
+
+### Stage 4: **gpt-third-pass**
+**Intelligent Post-Processing**
+- **Input**: Raw transcripts from Stage 3
+- **Purpose**: Merge transcripts, clean up hallucinations, format for readability. This task is done sequentially, processing each transcript file as a whole. Assume each track is single-speaker and contains overlap.
+- **Technology**: GPT/LLM for intelligent text processing
+- **Output**: Final polished transcripts ready for publication. The transcript should be faithful transcript (light normalization, no summarization). Flag hallucinations as content not aligned with timestamped audio segments.
+
+## 🔧 Development
+
+As the spec is implemented, follow these steps in order:
+1. develop the code
+2. lint the code
+3. run the code
+4. pass control to the user for User Acceptance Testing
+5. Make tweaks as directed by the user
+6. Upon user satisfaction, update the documentation and create a new commit to store work
+7. Repeat
+
+## File system structure
+
+```
+.
+├── inputs
+├── instructions
+├── outputs
+│   ├── audio-files-wav
+│   ├── gpt-cleanup
+│   ├── silero-timestamps
+│   ├── status.json
+│   └── whisper-transcripts
+├── prompts
+├── src
+│   ├── config.py (stores configs)
+│   ├── ffmpeg-preprocess.py (pre-process audio files)
+│   ├── gpt-cleanup.py (post-processing on merged transcript)
+│   ├── gpt-merge.py (merging separate transcript files)
+│   ├── main.py (cli and orchestration logic)
+│   ├── vad-timestamp.py (create per-speaker VAD timestamp files)
+│   └── whisper-transcribe.py (create per-speaker transcripts)
+└── tests
+```
+
+## 🚀 Default Configurations
+
+ Here are the **optimal configurations** and defaults that will produce the best results, taken from prior experiments:
+
+### Audio pre-processing
+```bash
+ffmpeg -i input.flac -ar 16000 -af "highpass=f=60,agate=threshold=-45dB:ratio=10:attack=5:release=60" output.wav
+```
+
+### Speech Detection (Silero VAD)
+
+```python
+    ap = argparse.ArgumentParser(description="Silero VAD streaming (direct model, clean)")
+    ap.add_argument("--input", required=True, help="Path to input audio (wav/mp3/m4a etc.)")
+    ap.add_argument("--out-json", default="speech_timestamps.json", help="Output JSON")
+    ap.add_argument("--out-csv", default="speech_timestamps.csv", help="Output CSV")
+    ap.add_argument("--frame-ms", type=int, default=32, help="Frame size (ms) >=32 to get >=512 samples")
+    ap.add_argument("--block-seconds", type=float, default=15.0, help="Streaming block size (seconds)")
+    ap.add_argument("--threshold-start", type=float, default=0.6, help="Start speech when prob >= this")
+    ap.add_argument("--threshold-end", type=float, default=0.4, help="End speech when prob <= this")
+    ap.add_argument("--min-speech-ms", type=int, default=250, help="Min speech duration to open a segment")
+    ap.add_argument("--min-silence-ms", type=int, default=200, help="Min trailing silence to close a segment")
+    ap.add_argument("--merge-gap-ms", type=int, default=150, help="Merge segments if gap < this (ms)")
+    ap.add_argument("--pad-ms", type=int, default=30, help="Pad each segment by this (ms)")
+    ap.add_argument("--drop-below-ms", type=int, default=250, help="Drop segments shorter than this (ms)")
+    ap.add_argument("--rms-gate-dbfs", type=float, default=-45.0, help="If frame RMS is below this dBFS, treat as silence")
+```
+
+### Speech-to-Text** (Whisper)
+```python
+
+    ap = argparse.ArgumentParser(description="Transcribe only VAD speech spans with Whisper")
+    ap.add_argument("--input", required=True, help="Path or URL to original audio")
+    ap.add_argument("--segments", required=True, help="speech.json produced by VAD step")
+    ap.add_argument("--out-json", default="transcript.json", help="Output transcript JSON")
+    ap.add_argument("--out-srt", default="transcript.srt", help="Output SRT file")
+    ap.add_argument("--model", default="small.en", help="Whisper model size/name")
+    ap.add_argument("--language", default="en", help="Language hint (e.g., 'en')")
+    ap.add_argument("--split-sentences", action="store_true", help="Emit one SRT cue per Whisper sentence-segment (recommended)")
+    ap.add_argument("--temperature", type=float, default=0.0, help="Decoding temperature (0.0 for deterministic/beam)")
+    ap.add_argument("--min-sentence-ms", type=int, default=1200, help="Merge sentence segments if both are shorter than this")
+    ap.add_argument("--merge-sentence-gap-ms", type=int, default=200, help="Max gap between adjacent sentences to merge (ms)")
+```
