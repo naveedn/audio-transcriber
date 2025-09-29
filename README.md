@@ -1,6 +1,6 @@
 # Transcribe
 
-A CLI-based speech-to-text transcription application optimized for Apple Silicon that processes multi-track recordings into accurate transcripts with speaker identification and timestamps.
+A CLI-based speech-to-text transcription application optimized for Apple Silicon that processes multi-track recordings into accurate transcripts with speaker identification and timestamps. Designed to be used with [craig.chat](https://craig.chat/). 
 
 ## 🎯 Overview
 
@@ -49,7 +49,7 @@ Audio Files → [Stage 0] → [Stage 1] → [Stage 2] → [Stage 3] → [Stage 4
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd transcribe
+cd audio-transcriber
 
 # Install dependencies
 uv sync
@@ -123,7 +123,7 @@ ffmpeg -i input.flac -ar 16000 -af "highpass=f=60,agate=threshold=-45dB:ratio=10
 
 ## 🏗️ Architecture Benefits
 
-- **Fast**: Process 3-hour recordings in ≤20 minutes (20x real-time speed)
+- **Fast**: Process 3-hour recordings in ~45 minutes (4x real-time speed)
 - **Modular**: Each stage is independent and can be developed/tested separately
 - **Resumable**: Can restart from any completed stage via `outputs/status.json`
 - **Debuggable**: Inspect intermediate outputs at each stage
