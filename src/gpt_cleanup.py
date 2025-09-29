@@ -86,6 +86,8 @@ class TranscriptProcessor:
                             text=segment["text"],
                             speaker=speaker
                         ))
+
+                    logger.info(f"Loaded {len(segments)} segments from {json_file.name}")
                 else:
                     # Simple array format
                     for segment in data:
@@ -95,8 +97,6 @@ class TranscriptProcessor:
                             text=segment["text"],
                             speaker=speaker
                         ))
-
-                logger.info(f"Loaded {len(data)} segments from {json_file.name}")
 
             except Exception as e:
                 logger.error(f"Error loading {json_file}: {e}")
