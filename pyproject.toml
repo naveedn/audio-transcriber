@@ -12,12 +12,13 @@ dependencies = [
     "openai>=1.0.0",
     "python-dotenv>=1.0.0",
     "silero-vad>=5.0.0",
-    "mlx-whisper>=0.1.0",
+    "mlx-whisper>=0.1.0 ; platform_system != 'Windows'",
     "ffmpeg-python>=0.2.0",
     "click>=8.0.0",
     "rich>=13.0.0",
     "pydantic>=2.0.0",
     "aiofiles>=23.0.0",
+    "openai-whisper>=20250625",
 ]
 
 [project.optional-dependencies]

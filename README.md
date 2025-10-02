@@ -51,6 +51,9 @@ Audio Files → [Stage 0] → [Stage 1] → [Stage 2] → [Stage 3] → [Stage 4
 git clone <repository-url>
 cd audio-transcriber
 
+# create an inputs folder where audio files will be placed
+mkdir inputs
+
 # Install dependencies
 uv sync
 
