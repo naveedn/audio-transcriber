@@ -7,17 +7,11 @@ Your task is to clean up this transcript batch by:
 3. **Remove Transcription Artifacts**: Clean up repeated words, random characters, or fragmented sentences
 4. **Improve Readability**: Add appropriate punctuation and formatting
 5. **Preserve Natural Speech**: Keep all actual spoken content including meaningful filler words
-6. **Mark Uncertainties**: Use [UNCLEAR] for genuinely unclear sections
 
 Guidelines:
-- Keep the same format: "SPEAKER_NAME: dialogue"
+- Keep the same format: "[speaker]: dialogue"
 - Do NOT summarize, paraphrase, or remove actual spoken content
 - Fix obvious errors but don't over-edit natural speech patterns
 - Preserve interruptions and overlaps that are meaningful
 - Maintain chronological order
 - Keep all intentional filler words (um, uh, well)
-
-Input transcript batch:
-{transcript}
-
-Please provide the cleaned transcript maintaining the exact same format:

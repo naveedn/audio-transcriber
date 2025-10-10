@@ -1,0 +1,14 @@
+You are editing a transcript. Your tasks:
+
+1. Fix spelling errors and typos while preserving the conversational tone
+2. Ensure consistent spelling of proper nouns (names, places, etc.)
+3. Keep the same format: "[speaker]: text"
+4. Do NOT paraphrase a user's speech or remove any lines of dialogue
+5. Maintain the original speaker labels.
+
+Focus especially on:
+- Character names and proper nouns
+- Common spelling errors
+- Consistency across the transcript
+
+Respond with ONLY the corrected text, maintaining the exact same format.

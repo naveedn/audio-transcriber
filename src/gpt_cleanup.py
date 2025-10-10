@@ -1,5 +1,6 @@
 """Stage 4: Final transcript processing using the proven working approach."""
 
+import asyncio
 import json
 import logging
 import re
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import List
 
 import openai
+import tiktoken
 from rich.console import Console
 
 from .config import Config
@@ -137,90 +139,199 @@ class TranscriptProcessor:
         logger.info(f"After merging: {len(merged)} segments (reduced from {len(segments)})")
         return merged
 
-    def fix_spelling_with_gpt(self, segments: List[TranscriptSegment], batch_size: int = 100) -> List[TranscriptSegment]:
-        """Fix spelling inconsistencies using GPT-4o-mini with large batches."""
+    def _estimate_tokens(self, text: str) -> int:
+        """Estimate token count for a text string."""
+        try:
+            encoding = tiktoken.encoding_for_model(self.gpt_config.model)
+            return len(encoding.encode(text))
+        except Exception:
+            # Fallback: rough estimation (1 token ≈ 4 characters)
+            return len(text) // 4
+
+    def _create_dynamic_batches(self, segments: List[TranscriptSegment], max_input_tokens: int = 10000) -> List[List[TranscriptSegment]]:
+        """Create batches dynamically based on token count to maximize efficiency."""
+        batches = []
+        current_batch = []
+        current_tokens = 0
+
+        # System prompt tokens (approximate)
+        system_prompt_tokens = 110
+
+        for segment in segments:
+            # Format as it will appear in the request
+            segment_text = f"[{segment.speaker}]: {segment.text}"
+            segment_tokens = self._estimate_tokens(segment_text)
+
+            # Reserve tokens for response (roughly same as input)
+            # Add safety margin of 20%
+            total_tokens_needed = current_tokens + segment_tokens
+            estimated_response_tokens = total_tokens_needed
+            total_with_overhead = system_prompt_tokens + total_tokens_needed + estimated_response_tokens
+
+            # Check if adding this segment would exceed limit
+            if current_batch and (total_with_overhead * 1.2) > max_input_tokens:
+                # Start new batch
+                batches.append(current_batch)
+                current_batch = [segment]
+                current_tokens = segment_tokens
+            else:
+                current_batch.append(segment)
+                current_tokens += segment_tokens
+
+        # Add final batch
+        if current_batch:
+            batches.append(current_batch)
+
+        return batches
+
+    async def _process_batch_async(
+        self,
+        batch: List[TranscriptSegment],
+        batch_num: int,
+        total_batches: int
+    ) -> List[TranscriptSegment]:
+        """Process a single batch asynchronously."""
+        # Create text batch for processing
+        texts = [f"{j+1}. [{seg.speaker}]: {seg.text}" for j, seg in enumerate(batch)]
+        batch_text = "\n".join(texts)
+
+        console.print(f"[blue]Processing batch {batch_num}/{total_batches} ({len(batch)} segments, ~{self._estimate_tokens(batch_text)} tokens)...")
+
+        try:
+            prompt_file = self.config.paths.prompts_dir / "spell-corrections.txt"
+            system_prompt = open(prompt_file, 'r').read()
+
+            # Use async OpenAI client
+            response = await asyncio.to_thread(
+                self.client.chat.completions.create,
+                model=self.gpt_config.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": batch_text
+                    }
+                ],
+                max_tokens=self.gpt_config.max_tokens,
+                temperature=self.gpt_config.temperature
+            )
+
+            corrected_text = response.choices[0].message.content.strip()
+            corrected_lines = corrected_text.split('\n')
+
+            # Filter out empty lines that GPT might add
+            corrected_lines = [line for line in corrected_lines if line.strip()]
+
+            corrected_batch = []
+            # Parse the corrected responses back to segments
+            for j, line in enumerate(corrected_lines):
+                if j < len(batch):
+                    # Extract the corrected text (remove numbering and speaker prefix)
+                    match = re.match(r'^\d+\.\s*\[([^\]]+)\]:\s*(.+)$', line.strip())
+                    if match:
+                        corrected_batch.append(TranscriptSegment(
+                            start_sec=batch[j].start_sec,
+                            end_sec=batch[j].end_sec,
+                            text=match.group(2).strip(),
+                            speaker=batch[j].speaker
+                        ))
+                    else:
+                        # Fallback to original if parsing fails
+                        logger.warning(f"Batch {batch_num}: Failed to parse line {j+1}, using original segment")
+                        corrected_batch.append(batch[j])
+
+            # CRITICAL: Validate we didn't lose any segments
+            if len(corrected_batch) != len(batch):
+                logger.error(
+                    f"Batch {batch_num}: Segment count mismatch! "
+                    f"Original: {len(batch)}, Corrected: {len(corrected_batch)}, "
+                    f"GPT lines: {len(corrected_lines)}. Using original batch."
+                )
+                console.print(
+                    f"[red]⚠ Batch {batch_num}: Lost {len(batch) - len(corrected_batch)} segments, "
+                    f"using original batch"
+                )
+                return batch
+
+            console.print(f"[green]✓ Completed batch {batch_num}/{total_batches}")
+            return corrected_batch
+
+        except Exception as e:
+            logger.error(f"Error processing batch {batch_num}: {e}")
+            console.print(f"[yellow]⚠ Batch {batch_num} failed, using original segments")
+            return batch
+
+    async def _process_batches_parallel(
+        self,
+        batches: List[List[TranscriptSegment]],
+        max_concurrent: int = 10
+    ) -> List[TranscriptSegment]:
+        """Process multiple batches in parallel with controlled concurrency."""
+        total_batches = len(batches)
+
+        # Create semaphore to limit concurrent requests
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def process_with_semaphore(batch: List[TranscriptSegment], batch_idx: int) -> tuple[int, List[TranscriptSegment]]:
+            async with semaphore:
+                result = await self._process_batch_async(batch, batch_idx + 1, total_batches)
+                return (batch_idx, result)
+
+        # Process all batches with controlled concurrency
+        tasks = [process_with_semaphore(batch, i) for i, batch in enumerate(batches)]
+        results = await asyncio.gather(*tasks)
+
+        # Sort by batch index to maintain order
+        results.sort(key=lambda x: x[0])
+
+        # Flatten results
+        corrected_segments = []
+        for _, batch_segments in results:
+            corrected_segments.extend(batch_segments)
+
+        return corrected_segments
+
+    def fix_spelling_with_gpt(self, segments: List[TranscriptSegment]) -> List[TranscriptSegment]:
+        """Fix spelling inconsistencies using GPT-4o-mini with optimized batching and parallel processing."""
         if not self.client:
             logger.warning("OpenAI client not initialized. Skipping spelling correction.")
             return segments
 
         console.print(f"[blue]Processing {len(segments)} segments for spelling consistency...")
-        corrected_segments = []
 
-        # Process in large batches for efficiency
-        total_batches = (len(segments) + batch_size - 1) // batch_size
-        console.print(f"[blue]Split into {total_batches} batches of up to {batch_size} segments each")
+        # Create dynamic batches based on token count
+        batches = self._create_dynamic_batches(segments, max_input_tokens=8000)
+        total_batches = len(batches)
 
-        for i in range(0, len(segments), batch_size):
-            batch = segments[i:i + batch_size]
-            batch_num = i // batch_size + 1
+        # Calculate statistics
+        total_segments = sum(len(batch) for batch in batches)
+        avg_segments_per_batch = total_segments / total_batches if total_batches > 0 else 0
 
-            # Create text batch for processing
-            texts = [f"{j+1}. [{seg.speaker}]: {seg.text}" for j, seg in enumerate(batch)]
-            batch_text = "\n".join(texts)
+        console.print(f"[blue]Created {total_batches} optimized batches (avg {avg_segments_per_batch:.1f} segments/batch)")
+        console.print(f"[blue]Processing with up to 10 concurrent requests...")
 
-            console.print(f"[blue]Processing batch {batch_num}/{total_batches} ({len(batch)} segments)...")
-
+        # Run async processing
+        try:
+            # Check if there's already a running event loop
             try:
-                response = self.client.chat.completions.create(
-                    model="gpt-4o-mini",  # Cost-effective model proven to work
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": """You are editing a transcript. Your tasks:
+                loop = asyncio.get_running_loop()
+                # If we're already in an event loop, create a task and run it
+                import nest_asyncio
+                nest_asyncio.apply()
+                corrected_segments = asyncio.run(self._process_batches_parallel(batches, max_concurrent=10))
+            except RuntimeError:
+                # No running loop, safe to use asyncio.run()
+                corrected_segments = asyncio.run(self._process_batches_parallel(batches, max_concurrent=10))
 
-1. Fix spelling errors and typos while preserving the conversational tone
-2. Ensure consistent spelling of proper nouns (names, places, etc.)
-3. Remove hallucinations in whisper output, where hallucinations are defined as long repeated strings (often written in caps) that would be infeasible to occur within a timeframe of a few seconds.
-4. Keep the same format: "[speaker]: text"
-5. Do not alter the meaning or add/remove any content except for hallucination removal as defined above
-6. Maintain the original speaker labels.
-
-Focus especially on:
-- Character names and proper nouns
-- Common spelling errors
-- Consistency across the transcript
-- Detection and removal of whisper hallucinations as specified
-
-Respond with only the corrected text, maintaining the exact same format."""
-                        },
-                        {
-                            "role": "user",
-                            "content": batch_text
-                        }
-                    ],
-                    max_tokens=self.gpt_config.max_tokens,
-                    temperature=0.1  # Low temperature for consistent corrections
-                )
-
-                corrected_text = response.choices[0].message.content.strip()
-                corrected_lines = corrected_text.split('\n')
-
-                # Parse the corrected responses back to segments
-                for j, line in enumerate(corrected_lines):
-                    if j < len(batch):
-                        # Extract the corrected text (remove numbering and speaker prefix)
-                        match = re.match(r'^\d+\.\s*\[([^\]]+)\]:\s*(.+)$', line.strip())
-                        if match:
-                            corrected_segments.append(TranscriptSegment(
-                                start_sec=batch[j].start_sec,
-                                end_sec=batch[j].end_sec,
-                                text=match.group(2).strip(),
-                                speaker=batch[j].speaker  # Keep original speaker
-                            ))
-                        else:
-                            # Fallback to original if parsing fails
-                            corrected_segments.append(batch[j])
-
-            except Exception as e:
-                logger.error(f"Error processing batch {batch_num}: {e}")
-                # Add original segments on error
-                corrected_segments.extend(batch)
-
-            if batch_num % 5 == 0:  # Progress update every 5 batches
-                console.print(f"[green]Processed {min(i + batch_size, len(segments))}/{len(segments)} segments")
-
-        logger.info("Spelling correction completed")
-        return corrected_segments
+            logger.info(f"Spelling correction completed: {len(corrected_segments)} segments processed")
+            return corrected_segments
+        except Exception as e:
+            logger.error(f"Error in parallel processing: {e}")
+            console.print(f"[red]Parallel processing failed: {e}")
+            return segments
 
     def save_final_outputs(self, segments: List[TranscriptSegment], output_path: Path) -> None:
         """Save the final transcript in both JSON and SRT formats."""
@@ -267,7 +378,7 @@ Respond with only the corrected text, maintaining the exact same format."""
         # Step 2: Fix spelling inconsistencies with GPT
         if self.config.openai_api_key:
             console.print("[blue]Fixing spelling inconsistencies with GPT-4o-mini...")
-            segments = self.fix_spelling_with_gpt(segments, batch_size=100)
+            segments = self.fix_spelling_with_gpt(segments)
         else:
             logger.warning("Spelling correction skipped - no OpenAI API key")
 

@@ -773,6 +773,15 @@ wheels = [
 ]
 
 [[package]]
+name = "nest-asyncio"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/83/f8/51569ac65d696c8ecbee95938f89d4abf00f47d58d48f6fbabfe8f0baefe/nest_asyncio-1.6.0.tar.gz", hash = "sha256:6f172d5449aca15afd6c646851f4e31e02c598d553a667e38cafa997cfec55fe", size = 7418 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a0/c4/c2971a3ba4c6103a3d10c4b0f24f461ddc027f0f09763220cf35ca1401b3/nest_asyncio-1.6.0-py3-none-any.whl", hash = "sha256:87af6efd6b5e897c81050477ef65c62e2b2f35d51703cae01aff2905b1852e1c", size = 5195 },
+]
+
+[[package]]
 name = "networkx"
 version = "3.5"
 source = { registry = "https://pypi.org/simple" }
@@ -1796,12 +1805,14 @@ dependencies = [
     { name = "ffmpeg-python" },
     { name = "librosa" },
     { name = "mlx-whisper" },
+    { name = "nest-asyncio" },
     { name = "numpy" },
     { name = "openai" },
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "rich" },
     { name = "silero-vad" },
+    { name = "tiktoken" },
     { name = "torch" },
     { name = "torchaudio" },
 ]
@@ -1818,6 +1829,7 @@ requires-dist = [
     { name = "ffmpeg-python", specifier = ">=0.2.0" },
     { name = "librosa", specifier = ">=0.10.0" },
     { name = "mlx-whisper", specifier = ">=0.1.0" },
+    { name = "nest-asyncio", specifier = ">=1.6.0" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "openai", specifier = ">=1.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
@@ -1825,6 +1837,7 @@ requires-dist = [
     { name = "rich", specifier = ">=13.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "silero-vad", specifier = ">=5.0.0" },
+    { name = "tiktoken", specifier = ">=0.11.0" },
     { name = "torch", specifier = ">=2.0.0" },
     { name = "torchaudio", specifier = ">=2.0.0" },
 ]
