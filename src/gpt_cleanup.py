@@ -170,14 +170,16 @@ class TranscriptProcessor:
 
 1. Fix spelling errors and typos while preserving the conversational tone
 2. Ensure consistent spelling of proper nouns (names, places, etc.)
-3. Keep the same format: "[speaker]: text"
-4. Do not change the meaning or add/remove content
-5. Maintain the original speaker labels
+3. Remove hallucinations in whisper output, where hallucinations are defined as long repeated strings (often written in caps) that would be infeasible to occur within a timeframe of a few seconds.
+4. Keep the same format: "[speaker]: text"
+5. Do not alter the meaning or add/remove any content except for hallucination removal as defined above
+6. Maintain the original speaker labels.
 
 Focus especially on:
 - Character names and proper nouns
 - Common spelling errors
 - Consistency across the transcript
+- Detection and removal of whisper hallucinations as specified
 
 Respond with only the corrected text, maintaining the exact same format."""
                         },
