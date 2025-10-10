@@ -243,18 +243,31 @@ class TranscriptProcessor:
                         logger.warning(f"Batch {batch_num}: Failed to parse line {j+1}, using original segment")
                         corrected_batch.append(batch[j])
 
-            # CRITICAL: Validate we didn't lose any segments
-            if len(corrected_batch) != len(batch):
+            # CRITICAL: Validate we didn't lose too many segments
+            # Accept batches within 2 segments of original
+            segment_diff = abs(len(corrected_batch) - len(batch))
+            if segment_diff > 2:
                 logger.error(
                     f"Batch {batch_num}: Segment count mismatch! "
                     f"Original: {len(batch)}, Corrected: {len(corrected_batch)}, "
-                    f"GPT lines: {len(corrected_lines)}. Using original batch."
+                    f"GPT lines: {len(corrected_lines)}. Difference of {segment_diff} exceeds threshold of 2. "
+                    f"Using original batch."
                 )
                 console.print(
-                    f"[red]⚠ Batch {batch_num}: Lost {len(batch) - len(corrected_batch)} segments, "
+                    f"[red]⚠ Batch {batch_num}: Segment difference of {segment_diff} exceeds threshold, "
                     f"using original batch"
                 )
                 return batch
+            elif segment_diff > 0:
+                logger.warning(
+                    f"Batch {batch_num}: Segment count differs by {segment_diff} "
+                    f"(Original: {len(batch)}, Corrected: {len(corrected_batch)}), "
+                    f"but within acceptable threshold of 2. Accepting corrected batch."
+                )
+                console.print(
+                    f"[yellow]⚠ Batch {batch_num}: Segment count differs by {segment_diff}, "
+                    f"but within threshold - accepting corrected batch"
+                )
 
             console.print(f"[green]✓ Completed batch {batch_num}/{total_batches}")
             return corrected_batch
