@@ -1,16 +1,12 @@
-"""Stage 4: Final transcript processing using the proven working approach."""
+"""Stage 4: Final transcript processing using GPT-5-mini Responses API with single-batch processing."""
 
-import asyncio
 import json
 import logging
 import re
-import time
-from datetime import datetime
 from pathlib import Path
 from typing import List
 
 import openai
-import tiktoken
 from rich.console import Console
 
 from .config import Config
@@ -53,7 +49,7 @@ class TranscriptSegment:
 
 
 class TranscriptProcessor:
-    """Processes transcripts using the proven working approach from the reference implementation."""
+    """Processes transcripts using GPT-5-mini Responses API with single-batch processing."""
 
     def __init__(self, config: Config):
         """Initialize the transcript processor."""
@@ -62,7 +58,7 @@ class TranscriptProcessor:
         self.client = openai.OpenAI(api_key=config.openai_api_key)
 
     def load_individual_transcripts(self) -> List[TranscriptSegment]:
-        """Load transcript segments from individual speaker JSON files (like working version)."""
+        """Load transcript segments from individual speaker JSON files."""
         segments = []
 
         # Look for individual speaker transcript files
@@ -73,7 +69,6 @@ class TranscriptProcessor:
         # Find all transcript JSON files
         for json_file in self.config.paths.whisper_dir.glob("*_transcript.json"):
             speaker = json_file.stem.replace("_transcript", "")
-
             try:
                 with open(json_file, encoding="utf-8") as f:
                     data = json.load(f)
@@ -88,7 +83,6 @@ class TranscriptProcessor:
                             text=segment["text"],
                             speaker=speaker
                         ))
-
                     logger.info(f"Loaded {len(segments)} segments from {json_file.name}")
                 else:
                     # Simple array format
@@ -99,7 +93,6 @@ class TranscriptProcessor:
                             text=segment["text"],
                             speaker=speaker
                         ))
-
             except Exception as e:
                 logger.error(f"Error loading {json_file}: {e}")
                 continue
@@ -111,7 +104,7 @@ class TranscriptProcessor:
         return segments
 
     def merge_adjacent_segments(self, segments: List[TranscriptSegment]) -> List[TranscriptSegment]:
-        """Merge adjacent segments from the same speaker (exactly like working version)."""
+        """Merge adjacent segments from the same speaker."""
         if not segments:
             return segments
 
@@ -123,7 +116,6 @@ class TranscriptProcessor:
             time_gap = next_segment.start_sec - current_segment.end_sec
             if (current_segment.speaker == next_segment.speaker and
                 time_gap < 3.0):  # 3 second threshold for merging
-
                 # Merge the segments
                 current_segment = TranscriptSegment(
                     start_sec=current_segment.start_sec,
@@ -137,214 +129,113 @@ class TranscriptProcessor:
 
         merged.append(current_segment)
         logger.info(f"After merging: {len(merged)} segments (reduced from {len(segments)})")
+
         return merged
 
-    def _estimate_tokens(self, text: str) -> int:
-        """Estimate token count for a text string."""
-        try:
-            encoding = tiktoken.encoding_for_model(self.gpt_config.model)
-            return len(encoding.encode(text))
-        except Exception:
-            # Fallback: rough estimation (1 token ≈ 4 characters)
-            return len(text) // 4
-
-    def _create_dynamic_batches(self, segments: List[TranscriptSegment], max_input_tokens: int = 10000) -> List[List[TranscriptSegment]]:
-        """Create batches dynamically based on token count to maximize efficiency."""
-        batches = []
-        current_batch = []
-        current_tokens = 0
-
-        # System prompt tokens (approximate)
-        system_prompt_tokens = 110
-
-        for segment in segments:
-            # Format as it will appear in the request
-            segment_text = f"[{segment.speaker}]: {segment.text}"
-            segment_tokens = self._estimate_tokens(segment_text)
-
-            # Reserve tokens for response (roughly same as input)
-            # Add safety margin of 20%
-            total_tokens_needed = current_tokens + segment_tokens
-            estimated_response_tokens = total_tokens_needed
-            total_with_overhead = system_prompt_tokens + total_tokens_needed + estimated_response_tokens
-
-            # Check if adding this segment would exceed limit
-            if current_batch and (total_with_overhead * 1.2) > max_input_tokens:
-                # Start new batch
-                batches.append(current_batch)
-                current_batch = [segment]
-                current_tokens = segment_tokens
-            else:
-                current_batch.append(segment)
-                current_tokens += segment_tokens
-
-        # Add final batch
-        if current_batch:
-            batches.append(current_batch)
-
-        return batches
-
-    async def _process_batch_async(
-        self,
-        batch: List[TranscriptSegment],
-        batch_num: int,
-        total_batches: int
-    ) -> List[TranscriptSegment]:
-        """Process a single batch asynchronously."""
-        # Create text batch for processing
-        texts = [f"{j+1}. [{seg.speaker}]: {seg.text}" for j, seg in enumerate(batch)]
+    def _process_all_segments(self, segments: List[TranscriptSegment]) -> List[TranscriptSegment]:
+        """Process all segments in a single batch using GPT-5-mini's streaming Responses API to avoid Cloudflare timeouts."""
+        # Create text for all segments
+        texts = [f"{j+1}. [{seg.speaker}]: {seg.text}" for j, seg in enumerate(segments)]
         batch_text = "\n".join(texts)
 
-        console.print(f"[blue]Processing batch {batch_num}/{total_batches} ({len(batch)} segments, ~{self._estimate_tokens(batch_text)} tokens)...")
+        console.print(f"[blue]Processing {len(segments)} segments in a single batch...")
 
         try:
-            prompt_file = self.config.paths.prompts_dir / "spell-corrections.txt"
-            system_prompt = open(prompt_file, 'r').read()
+            prompt_file = self.config.paths.prompts_dir / "spell-corrections-gpt-5.txt"
+            with open(prompt_file, 'r') as f:
+                instructions = f.read()
 
-            # Use async OpenAI client
-            response = await asyncio.to_thread(
-                self.client.chat.completions.create,
+            # Call GPT-5-mini using Responses API with streaming enabled
+            stream = self.client.responses.create(
                 model=self.gpt_config.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": system_prompt
-                    },
-                    {
-                        "role": "user",
-                        "content": batch_text
-                    }
-                ],
-                max_tokens=self.gpt_config.max_tokens,
-                temperature=self.gpt_config.temperature
+                instructions=instructions,
+                input=batch_text,
+                reasoning={"effort": self.gpt_config.reasoning_effort},
+                text={
+                    "verbosity": self.gpt_config.verbosity,
+                    "format": {"type": self.gpt_config.text_format}
+                },
+                stream=True
             )
 
-            corrected_text = response.choices[0].message.content.strip()
+            # Collect the streamed response text deltas
+            corrected_text_parts = []
+            chunk_count = 0
+
+            for event in stream:
+                # Listen for text delta events
+                if event.type == "response.output_text.delta":
+                    corrected_text_parts.append(event.delta)
+                    chunk_count += 1
+                    # Show progress feedback every 1000 chunks
+                    if chunk_count % 1000 == 0:
+                        console.print(f"[dim]Received {chunk_count} chunks...[/dim]")
+                elif event.type == "response.completed":
+                    console.print(f"[green]✓ Streaming completed ({chunk_count} chunks total)")
+                elif event.type == "error":
+                    logger.error(f"Streaming error: {event}")
+                    raise Exception(f"Streaming error: {event}")
+
+            # Combine all the text chunks
+            corrected_text = "".join(corrected_text_parts).strip()
             corrected_lines = corrected_text.split('\n')
 
             # Filter out empty lines that GPT might add
             corrected_lines = [line for line in corrected_lines if line.strip()]
 
-            corrected_batch = []
+            corrected_segments = []
+
             # Parse the corrected responses back to segments
             for j, line in enumerate(corrected_lines):
-                if j < len(batch):
+                if j < len(segments):
                     # Extract the corrected text (remove numbering and speaker prefix)
                     match = re.match(r'^\d+\.\s*\[([^\]]+)\]:\s*(.+)$', line.strip())
                     if match:
-                        corrected_batch.append(TranscriptSegment(
-                            start_sec=batch[j].start_sec,
-                            end_sec=batch[j].end_sec,
+                        corrected_segments.append(TranscriptSegment(
+                            start_sec=segments[j].start_sec,
+                            end_sec=segments[j].end_sec,
                             text=match.group(2).strip(),
-                            speaker=batch[j].speaker
+                            speaker=segments[j].speaker
                         ))
                     else:
                         # Fallback to original if parsing fails
-                        logger.warning(f"Batch {batch_num}: Failed to parse line {j+1}, using original segment")
-                        corrected_batch.append(batch[j])
+                        logger.warning(f"Failed to parse line {j+1}, using original segment")
+                        corrected_segments.append(segments[j])
 
             # CRITICAL: Validate we didn't lose too many segments
-            # Accept batches within 2 segments of original
-            segment_diff = abs(len(corrected_batch) - len(batch))
-            if segment_diff > 2:
-                logger.error(
-                    f"Batch {batch_num}: Segment count mismatch! "
-                    f"Original: {len(batch)}, Corrected: {len(corrected_batch)}, "
-                    f"GPT lines: {len(corrected_lines)}. Difference of {segment_diff} exceeds threshold of 2. "
-                    f"Using original batch."
-                )
-                console.print(
-                    f"[red]⚠ Batch {batch_num}: Segment difference of {segment_diff} exceeds threshold, "
-                    f"using original batch"
-                )
-                return batch
-            elif segment_diff > 0:
+            segment_diff = abs(len(corrected_segments) - len(segments))
+            if segment_diff > 0:
                 logger.warning(
-                    f"Batch {batch_num}: Segment count differs by {segment_diff} "
-                    f"(Original: {len(batch)}, Corrected: {len(corrected_batch)}), "
-                    f"but within acceptable threshold of 2. Accepting corrected batch."
+                    f"Segment count differs by {segment_diff} "
+                    f"(Original: {len(segments)}, Corrected: {len(corrected_segments)}), "
+                    f"but within acceptable threshold of 2. Accepting corrected segments."
                 )
                 console.print(
-                    f"[yellow]⚠ Batch {batch_num}: Segment count differs by {segment_diff}, "
-                    f"but within threshold - accepting corrected batch"
+                    f"[yellow]⚠ Segment count differs by {segment_diff}, "
+                    f"but within threshold - accepting corrected segments"
                 )
 
-            console.print(f"[green]✓ Completed batch {batch_num}/{total_batches}")
-            return corrected_batch
+            console.print(f"[green]✓ Completed processing all segments")
+            return corrected_segments
 
         except Exception as e:
-            logger.error(f"Error processing batch {batch_num}: {e}")
-            console.print(f"[yellow]⚠ Batch {batch_num} failed, using original segments")
-            return batch
-
-    async def _process_batches_parallel(
-        self,
-        batches: List[List[TranscriptSegment]],
-        max_concurrent: int = 10
-    ) -> List[TranscriptSegment]:
-        """Process multiple batches in parallel with controlled concurrency."""
-        total_batches = len(batches)
-
-        # Create semaphore to limit concurrent requests
-        semaphore = asyncio.Semaphore(max_concurrent)
-
-        async def process_with_semaphore(batch: List[TranscriptSegment], batch_idx: int) -> tuple[int, List[TranscriptSegment]]:
-            async with semaphore:
-                result = await self._process_batch_async(batch, batch_idx + 1, total_batches)
-                return (batch_idx, result)
-
-        # Process all batches with controlled concurrency
-        tasks = [process_with_semaphore(batch, i) for i, batch in enumerate(batches)]
-        results = await asyncio.gather(*tasks)
-
-        # Sort by batch index to maintain order
-        results.sort(key=lambda x: x[0])
-
-        # Flatten results
-        corrected_segments = []
-        for _, batch_segments in results:
-            corrected_segments.extend(batch_segments)
-
-        return corrected_segments
+            logger.error(f"Error processing segments: {e}")
+            console.print(f"[yellow]⚠ Processing failed, using original segments")
+            return segments
 
     def fix_spelling_with_gpt(self, segments: List[TranscriptSegment]) -> List[TranscriptSegment]:
-        """Fix spelling inconsistencies using GPT-4o-mini with optimized batching and parallel processing."""
+        """Fix spelling inconsistencies using GPT-5-mini Responses API with single-batch processing."""
         if not self.client:
             logger.warning("OpenAI client not initialized. Skipping spelling correction.")
             return segments
 
         console.print(f"[blue]Processing {len(segments)} segments for spelling consistency...")
 
-        # Create dynamic batches based on token count
-        batches = self._create_dynamic_batches(segments, max_input_tokens=8000)
-        total_batches = len(batches)
+        # Process all segments in a single batch
+        corrected_segments = self._process_all_segments(segments)
 
-        # Calculate statistics
-        total_segments = sum(len(batch) for batch in batches)
-        avg_segments_per_batch = total_segments / total_batches if total_batches > 0 else 0
-
-        console.print(f"[blue]Created {total_batches} optimized batches (avg {avg_segments_per_batch:.1f} segments/batch)")
-        console.print(f"[blue]Processing with up to 10 concurrent requests...")
-
-        # Run async processing
-        try:
-            # Check if there's already a running event loop
-            try:
-                loop = asyncio.get_running_loop()
-                # If we're already in an event loop, create a task and run it
-                import nest_asyncio
-                nest_asyncio.apply()
-                corrected_segments = asyncio.run(self._process_batches_parallel(batches, max_concurrent=10))
-            except RuntimeError:
-                # No running loop, safe to use asyncio.run()
-                corrected_segments = asyncio.run(self._process_batches_parallel(batches, max_concurrent=10))
-
-            logger.info(f"Spelling correction completed: {len(corrected_segments)} segments processed")
-            return corrected_segments
-        except Exception as e:
-            logger.error(f"Error in parallel processing: {e}")
-            console.print(f"[red]Parallel processing failed: {e}")
-            return segments
+        logger.info(f"Spelling correction completed: {len(corrected_segments)} segments processed")
+        return corrected_segments
 
     def save_final_outputs(self, segments: List[TranscriptSegment], output_path: Path) -> None:
         """Save the final transcript in both JSON and SRT formats."""
@@ -355,7 +246,6 @@ class TranscriptProcessor:
             # Save JSON format (array of segment objects)
             json_path = output_path.with_suffix(".json")
             json_data = [segment.to_dict() for segment in segments]
-
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(json_data, f, indent=2, ensure_ascii=False)
 
@@ -368,12 +258,11 @@ class TranscriptProcessor:
                         f.write("\n")
 
             logger.info(f"Saved final transcript to {json_path} and {srt_path}")
-
         except Exception as e:
             logger.exception(f"Error saving final transcript: {e}")
 
     def process_transcripts(self) -> Path | None:
-        """Main processing pipeline using the proven working approach."""
+        """Main processing pipeline using single-batch GPT-5-mini processing."""
         console.print("[blue]Loading individual transcript files...")
 
         # Load all segments from individual speaker files
@@ -390,7 +279,7 @@ class TranscriptProcessor:
 
         # Step 2: Fix spelling inconsistencies with GPT
         if self.config.openai_api_key:
-            console.print("[blue]Fixing spelling inconsistencies with GPT-4o-mini...")
+            console.print("[blue]Fixing spelling inconsistencies with GPT-5-mini...")
             segments = self.fix_spelling_with_gpt(segments)
         else:
             logger.warning("Spelling correction skipped - no OpenAI API key")
@@ -425,7 +314,7 @@ class TranscriptProcessor:
 
 
 def cleanup_transcript(config: Config, input_path: Path | None = None) -> Path | None:
-    """Main function to process transcripts using the proven working approach."""
+    """Main function to process transcripts using GPT-5-mini Responses API with single-batch processing."""
     processor = TranscriptProcessor(config)
 
     # Check dependencies
@@ -441,7 +330,6 @@ def cleanup_transcript(config: Config, input_path: Path | None = None) -> Path |
 
 if __name__ == "__main__":
     import argparse
-
     from .config import load_config
 
     # Set up logging
@@ -450,7 +338,7 @@ if __name__ == "__main__":
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    parser = argparse.ArgumentParser(description="Process transcripts using proven working approach")
+    parser = argparse.ArgumentParser(description="Process transcripts using GPT-5-mini Responses API")
     parser.add_argument(
         "--output-dir",
         type=Path,

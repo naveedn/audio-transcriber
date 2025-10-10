@@ -46,11 +46,14 @@ class WhisperConfig(BaseModel):
 
 
 class GPTConfig(BaseModel):
-    """Configuration for GPT post-processing."""
+    """Configuration for GPT post-processing using Responses API."""
 
-    model: str = Field(default="gpt-4o-mini", description="OpenAI model to use")
-    max_tokens: int = Field(default=16384, description="Maximum tokens per request")
-    temperature: float = Field(default=0.1, description="Generation temperature")
+    model: str = Field(default="gpt-5-nano", description="OpenAI model to use")
+    max_input_tokens: int = Field(default=400000, description="Maximum input tokens (context window)")
+    max_output_tokens: int = Field(default=128000, description="Maximum output tokens per request")
+    reasoning_effort: str = Field(default="minimal", description="Reasoning effort level (minimal, low, medium, high)")
+    verbosity: str = Field(default="low", description="Response verbosity (low, medium, high)")
+    text_format: str = Field(default="text", description="Response text format (text or json_schema)")
 
 
 class PathConfig(BaseModel):
