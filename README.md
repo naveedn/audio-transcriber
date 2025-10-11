@@ -2,7 +2,7 @@
 
 A CLI-based speech-to-text transcription application optimized for Apple Silicon that processes multi-track recordings into accurate transcripts with speaker identification and timestamps. Designed to be used with [craig.chat](https://craig.chat/).
 
-  [![Craig's Mascot](https://craig.chat/icon-512x512.png)](https://craig.chat/)
+  [![Craig's Mascot](https://craig.chat/icon-192x192.png)](https://craig.chat/)
 
 ## 🎯 Overview
 
