@@ -1806,12 +1806,9 @@ dependencies = [
     { name = "click" },
     { name = "ffmpeg-python" },
     { name = "librosa" },
-<<<<<<< HEAD
     { name = "mlx-whisper" },
     { name = "nest-asyncio" },
-=======
     { name = "mlx-whisper", marker = "sys_platform != 'win32'" },
->>>>>>> 36385f88a5b06c35266b8c9e5746cce57d8ec466
     { name = "numpy" },
     { name = "openai" },
     { name = "openai-whisper" },
@@ -1835,12 +1832,9 @@ requires-dist = [
     { name = "click", specifier = ">=8.0.0" },
     { name = "ffmpeg-python", specifier = ">=0.2.0" },
     { name = "librosa", specifier = ">=0.10.0" },
-<<<<<<< HEAD
     { name = "mlx-whisper", specifier = ">=0.1.0" },
     { name = "nest-asyncio", specifier = ">=1.6.0" },
-=======
     { name = "mlx-whisper", marker = "sys_platform != 'win32'", specifier = ">=0.1.0" },
->>>>>>> 36385f88a5b06c35266b8c9e5746cce57d8ec466
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "openai", specifier = ">=1.0.0" },
     { name = "openai-whisper", specifier = ">=20250625" },
