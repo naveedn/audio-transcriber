@@ -1,12 +1,59 @@
 # Audio Transcriber
 
-A CLI-based speech-to-text transcription application optimized for Apple Silicon that processes multi-track recordings into accurate transcripts with speaker identification and timestamps. Designed to be used with [craig.chat](https://craig.chat/).
-
-  [![Craig's Mascot](https://craig.chat/icon-192x192.png)](https://craig.chat/)
-
 ## 🎯 Overview
 
-Transcribe uses a 5-stage pipeline to convert FLAC audio files into polished transcripts, designed specifically for multi-speaker recordings like podcasts or meetings. The system leverages Apple Silicon optimization and modern Python tooling for fast, high-quality transcription.
+A CLI-based speech-to-text transcription application optimized for Apple Silicon that processes multi-track FLAC audio recordings into accurate transcripts with speaker identification and timestamps. Designed to be used with [craig.chat](https://craig.chat/). Use it for recordings like podcasts, meetings, or DND sessions. The program leverages Apple Silicon and modern Python tooling to run as fast as possible.
+
+[![Craig's Mascot](https://craig.chat/icon-192x192.png)](https://craig.chat/)
+
+## 🚀 Quick Start
+
+### Installation
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd audio-transcriber
+
+# create an inputs folder where audio files will be placed
+mkdir inputs
+
+# Install dependencies
+uv sync
+
+# Create environment file
+cp .env.template .env
+# Edit .env with your API keys:
+# OPENAI_API_KEY=your_openai_api_key_here
+# HUGGINGFACE_TOKEN=your_huggingface_token_here  # optional
+```
+
+### Basic Usage
+
+```bash
+
+# Run full pipeline
+uv run transcribe run
+
+# Validate installation and API keys
+uv run transcribe validate
+
+# Check pipeline status
+uv run transcribe status
+
+# Run specific stage
+uv run transcribe run-stage preprocess
+
+# Reset pipeline status
+uv run transcribe reset
+
+# Clean everything (reset + remove all inputs and outputs)
+uv run transcribe clean
+
+# Get help
+uv run transcribe --help
+```
+
 
 ## 📊 Pipeline Architecture
 
@@ -14,6 +61,13 @@ Transcribe uses a 5-stage pipeline to convert FLAC audio files into polished tra
 Audio Files → [Stage 0] → [Stage 1] → [Stage 2] → [Stage 3] → [Stage 4] → Final Transcript
               Bootstrap   Preprocess  Silero     Whisper      GPT
 ```
+### 🏗️ Architecture Benefits
+
+- **Fast**: Process 3-hour recordings in ≤20 minutes (20x real-time speed)
+- **Modular**: Each stage is independent and can be developed/tested separately
+- **Resumable**: Can restart from any completed stage via `outputs/status.json`
+- **Debuggable**: Inspect intermediate outputs at each stage
+- **Apple Silicon Optimized**: Uses MLX Whisper for M1/M2 performance
 
 ### Stage 0: Bootstrap
 - **Purpose**: Download ML models and validate environment
@@ -44,96 +98,6 @@ Audio Files → [Stage 0] → [Stage 1] → [Stage 2] → [Stage 3] → [Stage 4
 - **Technology**: OpenAI API for intelligent post-processing
 - **Output**: Final polished transcripts (`outputs/gpt-cleanup/`)
 
-## 🚀 Quick Start
-
-### Installation
-
-```bash
-# Clone the repository
-git clone <repository-url>
-cd audio-transcriber
-
-# create an inputs folder where audio files will be placed
-mkdir inputs
-
-# Install dependencies
-uv sync
-
-# Create environment file
-cp .env.template .env
-# Edit .env with your API keys:
-# OPENAI_API_KEY=your_openai_api_key_here
-# HUGGINGFACE_TOKEN=your_huggingface_token_here  # optional
-```
-
-### Basic Usage
-
-```bash
-# Validate installation and API keys
-uv run transcribe validate
-
-# Check pipeline status
-uv run transcribe status
-
-# Run full pipeline
-uv run transcribe run
-
-# Run specific stage
-uv run transcribe run-stage preprocess
-
-# Reset pipeline status
-uv run transcribe reset
-
-# Clean everything (reset + remove all inputs and outputs)
-uv run transcribe clean
-
-# Get help
-uv run transcribe --help
-```
-
-### Input Files
-
-Place your FLAC audio files in the `inputs/` directory:
-```
-inputs/
-├── speaker1.flac
-├── speaker2.flac
-└── speaker3.flac
-```
-
-The filename (without extension) is used as the speaker label in the final transcript.
-
-## 🔧 Configuration
-
-### Optimal Settings (Pre-configured)
-
-The system includes battle-tested configurations for best results:
-
-**FFmpeg Audio Processing:**
-```bash
-ffmpeg -i input.flac -ar 16000 -af "highpass=f=60,agate=threshold=-45dB:ratio=10:attack=5:release=60" output.wav
-```
-
-**Silero VAD Parameters:**
-- Threshold start: 0.6 (start speech detection)
-- Threshold end: 0.4 (end speech detection)
-- Min speech: 300ms (filter brief sounds)
-- Min silence: 500ms (segment boundaries)
-- Merge gap: 400ms (adjacent segment merging)
-
-**Whisper Settings:**
-- Model: small.en (optimal speed/accuracy balance)
-- Temperature: 0.0 (deterministic output)
-- Language: English with sentence-level segmentation
-
-## 🏗️ Architecture Benefits
-
-- **Fast**: Process 3-hour recordings in ≤20 minutes (20x real-time speed)
-- **Modular**: Each stage is independent and can be developed/tested separately
-- **Resumable**: Can restart from any completed stage via `outputs/status.json`
-- **Debuggable**: Inspect intermediate outputs at each stage
-- **Apple Silicon Optimized**: Uses MLX Whisper for M1/M2 performance
-
 ## 📁 Directory Structure
 
 ```
@@ -156,6 +120,42 @@ transcribe/
 │   └── gpt_cleanup.py        # Final transcript cleanup
 └── tests/                    # Test directory (currently empty)
 ```
+
+## 🔧 Configuration
+
+### Input Files
+
+Place your FLAC audio files in the `inputs/` directory:
+```
+inputs/
+├── speaker1.flac
+├── speaker2.flac
+└── speaker3.flac
+```
+
+The filename (without extension) is used as the speaker label in the final transcript.
+
+### Optimal Settings (Pre-configured)
+
+The system includes battle-tested configurations for best results:
+
+**FFmpeg Audio Processing:**
+```bash
+ffmpeg -i input.flac -ar 16000 -af "highpass=f=60,agate=threshold=-45dB:ratio=10:attack=5:release=60" output.wav
+```
+
+**Silero VAD Parameters:**
+- Threshold start: 0.6 (start speech detection)
+- Threshold end: 0.4 (end speech detection)
+- Min speech: 300ms (filter brief sounds)
+- Min silence: 500ms (segment boundaries)
+- Merge gap: 400ms (adjacent segment merging)
+
+**Whisper Settings:**
+- Model: small.en (optimal speed/accuracy balance)
+- Temperature: 0.0 (deterministic output)
+- Language: English with sentence-level segmentation
+
 
 ## 🛠️ Development
 
