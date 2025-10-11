@@ -139,6 +139,40 @@ class TranscriptProcessor:
         logger.info(f"After merging: {len(merged)} segments (reduced from {len(segments)})")
         return merged
 
+    def _truncate_repetitive_sequences(self, text: str, max_repeat: int = 50) -> str:
+        """Truncate excessively repeated character sequences to prevent GPT token overflow.
+
+        Args:
+            text: Input text that may contain long repeated sequences
+            max_repeat: Maximum number of times to allow a pattern to repeat
+
+        Returns:
+            Text with excessive repetitions truncated and marked
+        """
+        # Pattern to detect 2+ character sequences repeated many times
+        # Example: "HAHAHAHA" or "LALALA" or "hehehehe"
+        pattern = r'(.{2,}?)\1{3,}'  # Find patterns repeated 4+ times
+
+        def replace_repetition(match):
+            """Replace long repetitions with truncated version."""
+            full_match = match.group(0)
+            pattern_unit = match.group(1)
+
+            # Count how many times the pattern repeats
+            repetitions = len(full_match) // len(pattern_unit)
+
+            # If it repeats more than max_repeat times, truncate it
+            if repetitions > max_repeat:
+                # Keep first max_repeat repetitions and add indicator
+                truncated = pattern_unit * max_repeat
+                # Add ellipsis and note about continuation
+                return f"{truncated}... [continues]"
+            else:
+                return full_match
+
+        result = re.sub(pattern, replace_repetition, text)
+        return result
+
     def _estimate_tokens(self, text: str) -> int:
         """Estimate token count for a text string."""
         try:
@@ -148,7 +182,7 @@ class TranscriptProcessor:
             # Fallback: rough estimation (1 token ≈ 4 characters)
             return len(text) // 4
 
-    def _create_dynamic_batches(self, segments: List[TranscriptSegment], max_input_tokens: int = 10000) -> List[List[TranscriptSegment]]:
+    def _create_dynamic_batches(self, segments: List[TranscriptSegment], max_input_tokens: int = 12000) -> List[List[TranscriptSegment]]:
         """Create batches dynamically based on token count to maximize efficiency."""
         batches = []
         current_batch = []
@@ -191,8 +225,12 @@ class TranscriptProcessor:
         total_batches: int
     ) -> List[TranscriptSegment]:
         """Process a single batch asynchronously."""
-        # Create text batch for processing
-        texts = [f"{j+1}. [{seg.speaker}]: {seg.text}" for j, seg in enumerate(batch)]
+        # Create text batch for processing, truncating excessive repetitions
+        texts = []
+        for j, seg in enumerate(batch):
+            # Truncate repetitive sequences in the segment text
+            truncated_text = self._truncate_repetitive_sequences(seg.text)
+            texts.append(f"{j+1}. [{seg.speaker}]: {truncated_text}")
         batch_text = "\n".join(texts)
 
         console.print(f"[blue]Processing batch {batch_num}/{total_batches} ({len(batch)} segments, ~{self._estimate_tokens(batch_text)} tokens)...")
@@ -244,25 +282,44 @@ class TranscriptProcessor:
                         corrected_batch.append(batch[j])
 
             # CRITICAL: Validate we didn't lose too many segments
-            # Accept batches within 2 segments of original
+            # Accept batches within 5 segments of original
             segment_diff = abs(len(corrected_batch) - len(batch))
-            if segment_diff > 2:
+            if segment_diff > 5:
+                # Create error output directory
+                error_dir = self.config.paths.gpt_dir / "errors"
+                error_dir.mkdir(parents=True, exist_ok=True)
+
+                # Generate timestamp-based filename
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                batch_text_file = error_dir / f"batch_{batch_num}_{timestamp}_original.txt"
+                corrected_text_file = error_dir / f"batch_{batch_num}_{timestamp}_corrected.txt"
+
+                # Save original batch text
+                with open(batch_text_file, 'w', encoding='utf-8') as f:
+                    f.write(batch_text)
+
+                # Save corrected lines output
+                with open(corrected_text_file, 'w', encoding='utf-8') as f:
+                    f.write("\n".join(corrected_lines))
+
                 logger.error(
                     f"Batch {batch_num}: Segment count mismatch! "
                     f"Original: {len(batch)}, Corrected: {len(corrected_batch)}, "
-                    f"GPT lines: {len(corrected_lines)}. Difference of {segment_diff} exceeds threshold of 2. "
-                    f"Using original batch."
+                    f"GPT lines: {len(corrected_lines)}. Difference of {segment_diff} exceeds threshold of 5. "
+                    f"Using original batch. "
+                    f"Original saved to: {batch_text_file}, Corrected saved to: {corrected_text_file}"
                 )
+
                 console.print(
                     f"[red]⚠ Batch {batch_num}: Segment difference of {segment_diff} exceeds threshold, "
-                    f"using original batch"
+                    f"using original batch. Error files saved to {error_dir}"
                 )
                 return batch
             elif segment_diff > 0:
                 logger.warning(
                     f"Batch {batch_num}: Segment count differs by {segment_diff} "
                     f"(Original: {len(batch)}, Corrected: {len(corrected_batch)}), "
-                    f"but within acceptable threshold of 2. Accepting corrected batch."
+                    f"but within acceptable threshold of 5. Accepting corrected batch."
                 )
                 console.print(
                     f"[yellow]⚠ Batch {batch_num}: Segment count differs by {segment_diff}, "
@@ -316,7 +373,7 @@ class TranscriptProcessor:
         console.print(f"[blue]Processing {len(segments)} segments for spelling consistency...")
 
         # Create dynamic batches based on token count
-        batches = self._create_dynamic_batches(segments, max_input_tokens=8000)
+        batches = self._create_dynamic_batches(segments, max_input_tokens=12000)
         total_batches = len(batches)
 
         # Calculate statistics

@@ -2,13 +2,25 @@ You are editing a transcript. Your tasks:
 
 1. Fix spelling errors and typos while preserving the conversational tone
 2. Ensure consistent spelling of proper nouns (names, places, etc.)
-3. Keep the same format: "[speaker]: text"
+3. Keep the same format: "NUMBER. [speaker]: text"
 4. Do NOT paraphrase a user's speech or remove any lines of dialogue
-5. Maintain the original speaker labels.
+5. CRITICAL: NEVER change speaker labels - they must remain exactly as provided
 
 Focus especially on:
 - Character names and proper nouns
 - Common spelling errors
 - Consistency across the transcript
 
-Respond with ONLY the corrected text, maintaining the exact same format.
+STRICT REQUIREMENTS:
+- Each numbered line MUST keep its exact same speaker label
+- Do NOT reassign dialogue to different speakers
+- Do NOT merge lines from different speakers
+- Output EXACTLY the same number of lines as the input
+- The speaker in brackets (e.g., [1-jackslimz], [2-feliznaveedad]) must NEVER be modified
+
+Example:
+Input:  "5. [1-jackslimz]: thier going too the castel"
+Output: "5. [1-jackslimz]: Their going to the castle"
+(Note: Speaker [1-jackslimz] remains unchanged)
+
+Respond with ONLY the corrected text, maintaining the exact same format and speaker labels.
