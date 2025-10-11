@@ -2,7 +2,7 @@
 
 ## 🎯 Overview
 
-A CLI-based speech-to-text transcription application optimized for Apple Silicon that processes multi-track FLAC audio recordings into accurate transcripts with speaker identification and timestamps. Designed to be used with [craig.chat](https://craig.chat/). Use it for recordings like podcasts, meetings, or DND sessions. The program leverages Apple Silicon and modern Python tooling to run as fast as possible.
+A speech-to-text transcription cli application that processes multi-track FLAC audio recordings into a single, unified transcript. Designed to be used alongside [craig.chat](https://craig.chat/). Use it for recordings like podcasts, meetings, or DND sessions. The program leverages Apple Silicon and modern Python tooling to run as fast as possible.
 
 [![Craig's Mascot](https://craig.chat/icon-192x192.png)](https://craig.chat/)
 
@@ -32,7 +32,7 @@ cp .env.template .env
 
 ```bash
 
-# Run full pipeline
+# Run full pipeline or resume from the last completed stage
 uv run transcribe run
 
 # Validate installation and API keys
@@ -135,6 +135,12 @@ inputs/
 
 The filename (without extension) is used as the speaker label in the final transcript.
 
+### 📝 Output Formats
+
+Final transcripts are available in multiple formats:
+- **JSON**: Machine-readable with full metadata
+- **SRT**: Standard subtitle format with speaker labels
+
 ### Optimal Settings (Pre-configured)
 
 The system includes battle-tested configurations for best results:
@@ -181,47 +187,16 @@ uv run ruff format
 - **Configuration**: Pydantic with type validation
 - **Async**: asyncio for I/O-bound operations
 
-### Performance Targets
-
-- **Speed**: 20x real-time processing (3-hour recording in ≤20 minutes)
-- **Parallel Processing**: I/O-bound stages (preprocessing, VAD) run in parallel
-- **Memory Efficient**: Sequential Whisper processing respects MacBook memory limits
-
 ## 📋 Requirements
 
 ### System Dependencies
+- Python 3.11+
 - uv package manager
 - FFmpeg (for audio processing)
-- Python 3.11+
-- Apple Silicon Mac (for MLX Whisper optimization)
 
 ### API Keys
 - **OpenAI API Key**: Required for GPT-based transcript processing
 - **Hugging Face Token**: Optional, for accessing gated models
-
-### Python Dependencies
-See `pyproject.toml` for complete list. Key dependencies:
-- `mlx-whisper` - Apple Silicon optimized Whisper
-- `silero-vad` - Voice activity detection
-- `openai` - GPT API client
-- `click` - CLI framework
-- `rich` - Enhanced terminal output
-- `pydantic` - Configuration validation
-
-## 🔄 Resume Functionality
-
-The pipeline automatically tracks progress in `outputs/status.json`. If interrupted, simply run `uv run transcribe run` again to resume from the last completed stage.
-
-Status tracking includes:
-- Completion status for each stage
-- File processing progress
-- Error states and recovery information
-
-## 📝 Output Formats
-
-Final transcripts are available in multiple formats:
-- **JSON**: Machine-readable with full metadata
-- **SRT**: Standard subtitle format with speaker labels
 
 ## 🐛 Troubleshooting
 
@@ -231,23 +206,3 @@ Final transcripts are available in multiple formats:
 2. **FFmpeg Not Found**: Install FFmpeg: `brew install ffmpeg` or `winget install ffmpeg` if on [windows](https://www.gyan.dev/ffmpeg/builds/)
 3. **Memory Issues**: Large files may require breaking into smaller segments
 4. **MLX Whisper Issues**: Falls back to standard Whisper automatically
-
-### Getting Help
-
-```bash
-# Check system dependencies and API connectivity
-uv run transcribe validate
-
-# View detailed pipeline status
-uv run transcribe status
-
-# Reset if pipeline is in bad state
-uv run transcribe reset
-
-# Clean everything (reset + remove all files) for fresh start
-uv run transcribe clean
-```
-
-## 📄 License
-
-This project is designed for speech-to-text transcription tasks. Please ensure you have appropriate rights to process any audio content.
