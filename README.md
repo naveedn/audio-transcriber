@@ -1,6 +1,6 @@
 # Transcribe
 
-A CLI-based speech-to-text transcription application optimized for Apple Silicon that processes multi-track recordings into accurate transcripts with speaker identification and timestamps.
+A CLI-based speech-to-text transcription application optimized for Apple Silicon that processes multi-track recordings into accurate transcripts with speaker identification and timestamps. Designed to be used with [craig.chat](https://craig.chat/). 
 
 ## 🎯 Overview
 
@@ -49,7 +49,10 @@ Audio Files → [Stage 0] → [Stage 1] → [Stage 2] → [Stage 3] → [Stage 4
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd transcribe
+cd audio-transcriber
+
+# create an inputs folder where audio files will be placed
+mkdir inputs
 
 # Install dependencies
 uv sync
@@ -112,9 +115,9 @@ ffmpeg -i input.flac -ar 16000 -af "highpass=f=60,agate=threshold=-45dB:ratio=10
 **Silero VAD Parameters:**
 - Threshold start: 0.6 (start speech detection)
 - Threshold end: 0.4 (end speech detection)
-- Min speech: 250ms (filter brief sounds)
-- Min silence: 200ms (segment boundaries)
-- Merge gap: 150ms (adjacent segment merging)
+- Min speech: 300ms (filter brief sounds)
+- Min silence: 500ms (segment boundaries)
+- Merge gap: 400ms (adjacent segment merging)
 
 **Whisper Settings:**
 - Model: small.en (optimal speed/accuracy balance)
@@ -185,6 +188,7 @@ uv run ruff format
 ## 📋 Requirements
 
 ### System Dependencies
+- uv package manager
 - FFmpeg (for audio processing)
 - Python 3.11+
 - Apple Silicon Mac (for MLX Whisper optimization)
@@ -222,7 +226,7 @@ Final transcripts are available in multiple formats:
 ### Common Issues
 
 1. **Missing API Keys**: Ensure `.env` file contains valid OpenAI API key
-2. **FFmpeg Not Found**: Install FFmpeg: `brew install ffmpeg`
+2. **FFmpeg Not Found**: Install FFmpeg: `brew install ffmpeg` or `winget install ffmpeg` if on [windows](https://www.gyan.dev/ffmpeg/builds/)
 3. **Memory Issues**: Large files may require breaking into smaller segments
 4. **MLX Whisper Issues**: Falls back to standard Whisper automatically
 
