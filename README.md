@@ -6,6 +6,9 @@ A speech-to-text transcription cli application that processes multi-track FLAC a
 
 [![Craig's Mascot](https://craig.chat/icon-192x192.png)](https://craig.chat/)
 
+Demo Video (and program design) here: https://www.youtube.com/watch?v=v0KZGyJARts&t=300s
+
+
 ## 🚀 Quick Start
 
 ### Installation
