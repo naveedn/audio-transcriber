@@ -24,6 +24,9 @@ mkdir inputs
 # Install dependencies
 uv sync
 
+# Set up pre-commit hooks (for contributors)
+uv run pre-commit install
+
 # Create environment file
 cp .env.template .env
 # Edit .env with your API keys:
@@ -170,15 +173,20 @@ ffmpeg -i input.flac -ar 16000 -af "highpass=f=60,agate=threshold=-45dB:ratio=10
 
 ### Code Quality
 
+The project uses `pre-commit` hooks to automatically run code quality checks before commits.
+
 ```bash
-# Run linting
-uv run ruff check
+# Set up pre-commit hooks (one-time setup)
+uv run pre-commit install
 
-# Fix auto-fixable issues
-uv run ruff check --fix
+# Pre-commit will now run automatically on git commit
+# You can also run it manually on all files:
+uv run pre-commit run --all-files
 
-# Format code
-uv run ruff format
+# Or run ruff directly:
+uv run ruff check           # Run linting
+uv run ruff check --fix     # Fix auto-fixable issues
+uv run ruff format          # Format code
 ```
 
 ### Technology Stack

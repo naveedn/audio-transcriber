@@ -22,14 +22,17 @@ uv sync --dev
 
 ### Linting and Code Quality
 ```bash
-# Run linting
-uv run ruff check
+# Set up pre-commit hooks (one-time setup for contributors)
+uv run pre-commit install
 
-# Fix auto-fixable linting issues
-uv run ruff check --fix
+# Pre-commit automatically runs on git commit
+# Run manually on all files:
+uv run pre-commit run --all-files
 
-# Format code
-uv run ruff format
+# Run ruff directly:
+uv run ruff check           # Run linting
+uv run ruff check --fix     # Fix auto-fixable linting issues
+uv run ruff format          # Format code
 ```
 
 ### Running the Application
@@ -131,6 +134,7 @@ The system uses optimal defaults from the specification:
 - Linting: Comprehensive ruff configuration with strict rules
 - Type hints: Required for all functions (ANN rules enabled)
 - Documentation: Google-style docstrings expected
+- Pre-commit hooks: Automatically enforce code quality on commits (configured in .pre-commit-config.yaml)
 
 ## API Dependencies
 

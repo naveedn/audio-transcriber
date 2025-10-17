@@ -48,3 +48,8 @@ ignore = ["D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107", "COM81
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.3.0",
+]
