@@ -193,9 +193,7 @@ class Config(BaseModel):
             dir_path.mkdir(parents=True, exist_ok=True)
 
 
-def load_config(
-    config_file: Path | None = None, **overrides: object
-) -> Config:
+def load_config(config_file: Path | None = None, **overrides: object) -> Config:
     """Load configuration from file and environment variables."""
     config_data: dict[str, object] = {}
 

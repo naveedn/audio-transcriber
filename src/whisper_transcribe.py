@@ -1,10 +1,10 @@
 """Stage 3: Speech-to-Text Transcription with Whisper."""
 
+import importlib
 import json
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
 
 import librosa
 import numpy as np
@@ -33,41 +33,48 @@ class WhisperTranscriber:
         self.model = None
         self.use_mlx = False
         self.mlx_module = None
+        self._mlx_core = None
+
+    @staticmethod
+    def import_optional(module_name: str) -> object | None:
+        """Import an optional module, returning None if missing."""
+        try:
+            return importlib.import_module(module_name)
+        except ImportError:
+            return None
 
     def load_model(self) -> None:
-        """Initialize Whisper implementation (MLX Whisper doesn't require model loading)."""
-        try:
-            import mlx_whisper
+        """Initialize an available Whisper implementation."""
+        if self.use_mlx and self.mlx_module is not None:
+            return
+        if not self.use_mlx and self.model is not None:
+            return
 
-            self.mlx_module = mlx_whisper
+        mlx_module = self.import_optional("mlx_whisper")
+        if mlx_module is not None:
+            self.mlx_module = mlx_module
             self.use_mlx = True
             logger.info("MLX Whisper available for Apple Silicon optimization")
+            return
 
-        except ImportError:
-            logger.warning(
-                "⚠️ MLX Whisper not available, falling back to standard Whisper"
-            )
-            try:
-                import whisper
+        whisper_module = self.import_optional("whisper")
+        if whisper_module is not None:
+            self.model = whisper_module.load_model(self.whisper_config.model)
+            self.use_mlx = False
+            logger.info("Standard Whisper model loaded successfully")
+            return
 
-                self.model = whisper.load_model(self.whisper_config.model)
-                self.use_mlx = False
-                logger.info("Standard Whisper model loaded successfully")
-            except ImportError:
-                msg = "Neither MLX Whisper nor standard Whisper is available"
-                raise ImportError(msg)
-        except Exception as e:
-            logger.exception(f"Failed to initialize Whisper: {e}")
-            raise
+        msg = "Neither MLX Whisper nor standard Whisper is available"
+        raise ImportError(msg) from None
 
     def _load_vad_segments(self, vad_path: Path) -> list[dict]:
         """Load VAD segments from JSON file."""
         try:
-            with open(vad_path) as f:
-                data = json.load(f)
+            with vad_path.open(encoding="utf-8") as file_obj:
+                data = json.load(file_obj)
                 return data.get("segments", [])
-        except Exception as e:
-            logger.exception(f"Error loading VAD segments from {vad_path}: {e}")
+        except (OSError, json.JSONDecodeError):
+            logger.exception("Error loading VAD segments from %s", vad_path)
             return []
 
     def _extract_audio_segment(
@@ -90,7 +97,6 @@ class WhisperTranscriber:
     def _transcribe_segment(
         self,
         audio_segment: np.ndarray,
-        sample_rate: int = 16000,
     ) -> dict:
         """Transcribe a single audio segment."""
         try:
@@ -102,12 +108,10 @@ class WhisperTranscriber:
 
             # Apply MLX memory optimization if available
             if self.use_mlx:
-                try:
-                    import mlx.core as mx
-
-                    mx.clear_cache()
-                except ImportError:
-                    pass  # MLX core not available, continue without memory management
+                if self._mlx_core is None:
+                    self._mlx_core = self.import_optional("mlx.core")
+                if self._mlx_core is not None:
+                    self._mlx_core.clear_cache()
 
             if self.use_mlx:
                 # MLX Whisper - uses direct function call with model repository
@@ -127,11 +131,10 @@ class WhisperTranscriber:
                     word_timestamps=True,
                 )
 
-            return result
-
-        except Exception as e:
-            logger.exception(f"Error transcribing audio segment: {e}")
+        except Exception:
+            logger.exception("Error transcribing audio segment")
             return {"text": "", "segments": [], "words": []}
+        return result
 
     def _merge_sentence_segments(self, segments: list[dict]) -> list[dict]:
         """Merge adjacent segments to create sentence-level segments."""
@@ -212,11 +215,11 @@ class WhisperTranscriber:
         audio_path: Path,
         vad_path: Path,
         progress: Progress | None = None,
-        task_id: Optional = None,
+        task_id: int | None = None,
     ) -> dict:
         """Transcribe a single audio file using VAD segments."""
         try:
-            logger.info(f"Transcribing {audio_path.name}")
+            logger.info("Transcribing %s", audio_path.name)
 
             # Load audio
             audio, sample_rate = librosa.load(str(audio_path), sr=16000)
@@ -224,10 +227,10 @@ class WhisperTranscriber:
             # Load VAD segments
             vad_segments = self._load_vad_segments(vad_path)
             if not vad_segments:
-                logger.warning(f"No VAD segments found for {audio_path.name}")
+                logger.warning("No VAD segments found for %s", audio_path.name)
                 return {"segments": [], "text": ""}
 
-            logger.info(f"Processing {len(vad_segments)} VAD segments")
+            logger.info("Processing %s VAD segments", len(vad_segments))
 
             # Transcribe each segment
             transcribed_segments = []
@@ -248,7 +251,7 @@ class WhisperTranscriber:
                     continue
 
                 # Transcribe segment
-                whisper_result = self._transcribe_segment(audio_segment, sample_rate)
+                whisper_result = self._transcribe_segment(audio_segment)
 
                 if whisper_result.get("text", "").strip():
                     segment_data = {
@@ -282,13 +285,15 @@ class WhisperTranscriber:
             }
 
             logger.info(
-                f"Transcribed {len(transcribed_segments)} segments for {audio_path.name}"
+                "Transcribed %s segments for %s",
+                len(transcribed_segments),
+                audio_path.name,
             )
-            return result
 
-        except Exception as e:
-            logger.exception(f"Error transcribing {audio_path.name}: {e}")
+        except Exception:
+            logger.exception("Error transcribing %s", audio_path.name)
             return {"segments": [], "text": ""}
+        return result
 
     def save_transcription(
         self,
@@ -306,23 +311,24 @@ class WhisperTranscriber:
             transcription_data = {
                 "speaker": speaker_name,
                 "transcription": transcription,
-                "config": self.whisper_config.dict(),
+                "config": self.whisper_config.model_dump(),
             }
 
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(transcription_data, f, indent=2, ensure_ascii=False)
+            json_path.write_text(
+                json.dumps(transcription_data, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
 
             # Save SRT
             srt_path = output_path.with_suffix(".srt")
             srt_content = self._create_srt_content(transcription["segments"])
 
-            with open(srt_path, "w", encoding="utf-8") as f:
-                f.write(srt_content)
+            srt_path.write_text(srt_content, encoding="utf-8")
 
-            logger.info(f"Saved transcription to {json_path} and {srt_path}")
+            logger.info("Saved transcription to %s and %s", json_path, srt_path)
 
-        except Exception as e:
-            logger.exception(f"Error saving transcription to {output_path}: {e}")
+        except OSError:
+            logger.exception("Error saving transcription to %s", output_path)
 
 
 class TranscriptionProcessor:
@@ -339,13 +345,14 @@ class TranscriptionProcessor:
 
         if not self.config.paths.audio_wav_dir.exists():
             logger.warning(
-                f"Audio WAV directory does not exist: {self.config.paths.audio_wav_dir}"
+                "Audio WAV directory does not exist: %s",
+                self.config.paths.audio_wav_dir,
             )
             return audio_vad_pairs
 
         if not self.config.paths.silero_dir.exists():
             logger.warning(
-                f"VAD directory does not exist: {self.config.paths.silero_dir}"
+                "VAD directory does not exist: %s", self.config.paths.silero_dir
             )
             return audio_vad_pairs
 
@@ -362,9 +369,13 @@ class TranscriptionProcessor:
             if vad_path.exists():
                 audio_vad_pairs.append((audio_path, vad_path))
             else:
-                logger.warning(f"No VAD file found for {speaker_name}: {vad_path}")
+                logger.warning(
+                    "No VAD file found for %s: %s", speaker_name, vad_path
+                )
 
-        logger.info(f"Found {len(audio_vad_pairs)} audio/VAD pairs for transcription")
+        logger.info(
+            "Found %s audio/VAD pairs for transcription", len(audio_vad_pairs)
+        )
         return sorted(audio_vad_pairs)
 
     def get_output_path(self, audio_path: Path) -> Path:
@@ -400,10 +411,10 @@ class TranscriptionProcessor:
 
                 # Load VAD segments to determine total work
                 try:
-                    with open(vad_path) as f:
-                        vad_data = json.load(f)
+                    with vad_path.open(encoding="utf-8") as file_obj:
+                        vad_data = json.load(file_obj)
                         total_segments = len(vad_data.get("segments", []))
-                except:
+                except (OSError, json.JSONDecodeError):
                     total_segments = 1
 
                 task_id = progress.add_task(
@@ -436,8 +447,8 @@ class TranscriptionProcessor:
                         failed_count += 1
                         progress.update(task_id, description=f"[red] {speaker_name}")
 
-                except Exception as e:
-                    logger.exception(f"Failed to transcribe {speaker_name}: {e}")
+                except Exception:
+                    logger.exception("Failed to transcribe %s", speaker_name)
                     failed_count += 1
                     progress.update(task_id, description=f"[red] {speaker_name}")
 
@@ -453,30 +464,17 @@ class TranscriptionProcessor:
         """Check if required dependencies are available."""
         errors = []
 
-        # Try MLX Whisper first
-        try:
-            import mlx_whisper
-
+        if self.transcriber.import_optional("mlx_whisper") is not None:
             logger.info("MLX Whisper is available for Apple Silicon optimization")
-        except ImportError:
-            # Fall back to standard Whisper
-            try:
-                import whisper
-
-                logger.info("Standard Whisper is available")
-            except ImportError:
-                errors.append("Neither MLX Whisper nor standard Whisper is installed")
+        elif self.transcriber.import_optional("whisper") is not None:
+            logger.info("Standard Whisper is available")
+        else:
+            errors.append("Neither MLX Whisper nor standard Whisper is installed")
 
         try:
-            import librosa
-        except ImportError:
-            errors.append("librosa is not installed")
-
-        try:
-            # Test initializing the transcriber (no longer loads models for MLX)
             self.transcriber.load_model()
-        except Exception as e:
-            errors.append(f"Cannot initialize Whisper: {e}")
+        except ImportError as exc:
+            errors.append(f"Cannot initialize Whisper: {exc}")
 
         return errors
 
@@ -559,6 +557,6 @@ if __name__ == "__main__":
         console.print(
             f"[green]Transcription complete! Generated {len(output_files)} files."
         )
-    except Exception as e:
-        console.print(f"[red]Transcription failed: {e}")
+    except (RuntimeError, OSError, ValueError) as exc:
+        console.print(f"[red]Transcription failed: {exc}")
         sys.exit(1)

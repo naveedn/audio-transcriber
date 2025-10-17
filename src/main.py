@@ -91,9 +91,9 @@ class PipelineStatus:
     def start_stage(self, stage_name: str) -> None:
         """Mark a stage as started."""
         self.status["stages"][stage_name]["status"] = "running"
-        self.status["stages"][stage_name]["start_time"] = (
-            datetime.now(tz=UTC).isoformat()
-        )
+        self.status["stages"][stage_name]["start_time"] = datetime.now(
+            tz=UTC
+        ).isoformat()
         self.save_status()
 
     def get_stage_elapsed_time(self, stage_name: str) -> str:
@@ -114,9 +114,7 @@ class PipelineStatus:
         self.status["stages"][stage_name]["status"] = (
             "completed" if success else "failed"
         )
-        self.status["stages"][stage_name]["end_time"] = (
-            datetime.now(tz=UTC).isoformat()
-        )
+        self.status["stages"][stage_name]["end_time"] = datetime.now(tz=UTC).isoformat()
         self.save_status()
 
         # Calculate and display duration
@@ -425,9 +423,7 @@ class AudioPipeline:
 
         # Record pipeline start
         if not self.status.status["pipeline_start"]:
-            self.status.status["pipeline_start"] = (
-                datetime.now(tz=UTC).isoformat()
-            )
+            self.status.status["pipeline_start"] = datetime.now(tz=UTC).isoformat()
             self.status.save_status()
 
         # Stage execution mapping
@@ -543,9 +539,7 @@ class AudioPipeline:
             except Exception as exc:
                 logger.exception("Stage %s failed", stage_name)
                 self.status.complete_stage(stage_name, success=False)
-                console.print(
-                    f"[red]❌ Pipeline failed at {stage_name}: {exc}"
-                )
+                console.print(f"[red]❌ Pipeline failed at {stage_name}: {exc}")
                 return False
 
         console.print(Panel("🎉 Pipeline completed successfully!", style="bold green"))

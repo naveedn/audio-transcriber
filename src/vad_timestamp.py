@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import librosa
@@ -16,6 +17,28 @@ from .config import Config
 
 console = Console()
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SegmentState:
+    """Mutable state used while iterating through VAD frames."""
+
+    segments: list[dict] = field(default_factory=list)
+    in_speech: bool = False
+    above_cnt: int = 0
+    below_cnt: int = 0
+    start_sample: int | None = None
+
+
+@dataclass
+class FrameContext:
+    """Configuration used while iterating through frames."""
+
+    frame_samples: int
+    min_speech_frames: int
+    min_silence_frames: int
+    sample_rate: int
+    audio_length: int
 
 
 class SileroVAD:
@@ -31,21 +54,17 @@ class SileroVAD:
     def load_model(self) -> None:
         """Load the Silero VAD model."""
         try:
-            import torch
-
-            # Load Silero VAD model
             self.model, self.utils = torch.hub.load(
                 repo_or_dir="snakers4/silero-vad",
                 model="silero_vad",
                 force_reload=False,
                 onnx=False,
             )
-
-            logger.info("Silero VAD model loaded successfully")
-
-        except Exception as e:
-            logger.exception(f"Failed to load Silero VAD model: {e}")
-            raise
+        except (OSError, RuntimeError) as exc:
+            logger.exception("Failed to load Silero VAD model")
+            message = "Unable to load Silero VAD model"
+            raise RuntimeError(message) from exc
+        logger.info("Silero VAD model loaded successfully")
 
     def _compute_rms_dbfs(self, audio_chunk: np.ndarray) -> float:
         """Compute RMS in dBFS for audio chunk."""
@@ -57,7 +76,7 @@ class SileroVAD:
     def _merge_and_pad_segments(
         self, segments: list[dict], audio_duration: float
     ) -> list[dict]:
-        """Merge segments with gap < merge_gap_ms and pad edges, matching reference implementation."""
+        """Merge close segments and pad their boundaries."""
         if not segments:
             return []
 
@@ -114,9 +133,144 @@ class SileroVAD:
             if duration >= min_duration:
                 filtered.append(segment)
             else:
-                logger.debug(f"Dropping short segment: {duration:.3f}s")
+                logger.debug("Dropping short segment: %.3fs", duration)
 
         return filtered
+
+    def _load_audio(self, audio_path: Path) -> tuple[np.ndarray, int]:
+        """Load audio file at target sample rate."""
+        audio, sample_rate = librosa.load(str(audio_path), sr=16000)
+        return audio, sample_rate
+
+    def _detect_segments(
+        self,
+        audio: np.ndarray,
+        sample_rate: int,
+    ) -> list[dict]:
+        """Run frame-based VAD over the provided audio array."""
+        if self.model is None:
+            self.load_model()
+
+        audio_tensor = torch.from_numpy(audio.astype(np.float32))
+
+        frame_samples = max(512, int(self.vad_config.frame_ms * sample_rate / 1000))
+        block_samples = int(self.vad_config.block_seconds * sample_rate)
+        ms_per_frame = 1000.0 * frame_samples / sample_rate
+        min_speech_frames = max(1, round(self.vad_config.min_speech_ms / ms_per_frame))
+        min_silence_frames = max(
+            1, round(self.vad_config.min_silence_ms / ms_per_frame)
+        )
+
+        state = SegmentState()
+        audio_length = len(audio)
+        context = FrameContext(
+            frame_samples=frame_samples,
+            min_speech_frames=min_speech_frames,
+            min_silence_frames=min_silence_frames,
+            sample_rate=sample_rate,
+            audio_length=audio_length,
+        )
+
+        for block_start in range(0, audio_length, block_samples):
+            block_end = min(block_start + block_samples, audio_length)
+            block_audio = audio_tensor[block_start:block_end]
+            self._process_block(
+                block_audio,
+                block_start,
+                context,
+                state,
+            )
+
+        return self._finalize_segments(state, sample_rate, audio_length)
+
+    def _frame_probability(self, frame_audio: torch.Tensor, sample_rate: int) -> float:
+        rms_dbfs = self._compute_rms_dbfs(frame_audio.numpy())
+        if rms_dbfs < self.vad_config.rms_gate_dbfs:
+            return 0.0
+        return float(self.model(frame_audio, sample_rate).item())
+
+    def _process_block(
+        self,
+        block_audio: torch.Tensor,
+        block_start: int,
+        context: FrameContext,
+        state: SegmentState,
+    ) -> None:
+        frame_samples = context.frame_samples
+        for frame_start in range(0, len(block_audio), frame_samples):
+            frame_end = min(frame_start + frame_samples, len(block_audio))
+            frame_audio = block_audio[frame_start:frame_end]
+            if len(frame_audio) < frame_samples:
+                continue
+
+            frame_end_sample = min(block_start + frame_end, context.audio_length)
+            prob = self._frame_probability(frame_audio, context.sample_rate)
+            self._update_state(
+                prob,
+                frame_end_sample,
+                context,
+                state,
+            )
+
+    def _update_state(
+        self,
+        prob: float,
+        frame_end_sample: int,
+        context: FrameContext,
+        state: SegmentState,
+    ) -> None:
+        if not state.in_speech:
+            if prob >= self.vad_config.threshold_start:
+                state.above_cnt += 1
+                if state.above_cnt >= context.min_speech_frames:
+                    state.start_sample = (
+                        frame_end_sample - state.above_cnt * context.frame_samples
+                    )
+                    state.in_speech = True
+                    state.below_cnt = 0
+            else:
+                state.above_cnt = 0
+            return
+
+        if prob <= self.vad_config.threshold_end:
+            state.below_cnt += 1
+            if (
+                state.below_cnt >= context.min_silence_frames
+                and state.start_sample is not None
+            ):
+                end_sample = frame_end_sample - state.below_cnt * context.frame_samples
+                state.segments.append(
+                    {
+                        "start": max(0, state.start_sample)
+                        / context.sample_rate,
+                        "end": min(end_sample, context.audio_length)
+                        / context.sample_rate,
+                        "confidence": prob,
+                    }
+                )
+                state.in_speech = False
+                state.above_cnt = 0
+                state.start_sample = None
+        else:
+            state.below_cnt = 0
+
+    def _finalize_segments(
+        self,
+        state: SegmentState,
+        sample_rate: int,
+        audio_length: int,
+    ) -> list[dict]:
+        if state.in_speech and state.start_sample is not None:
+            state.segments.append(
+                {
+                    "start": max(0, state.start_sample) / sample_rate,
+                    "end": audio_length / sample_rate,
+                    "confidence": 0.0,
+                }
+            )
+
+        segments = self._filter_short_segments(state.segments)
+        return self._merge_and_pad_segments(segments, audio_length / sample_rate)
 
     async def process_audio_file(
         self,
@@ -125,121 +279,30 @@ class SileroVAD:
         task_id: TaskID | None = None,
     ) -> list[dict]:
         """Process a single audio file for voice activity detection."""
+        logger.info("Processing VAD for %s", audio_path.name)
         try:
-            logger.info(f"Processing VAD for {audio_path.name}")
-
-            # Load audio
-            audio, sample_rate = librosa.load(str(audio_path), sr=16000)
-            audio_duration = len(audio) / sample_rate
-
-            logger.info(f"Loaded audio: {audio_duration:.2f}s, {sample_rate}Hz")
-
-            # Ensure model is loaded
-            if self.model is None:
-                self.load_model()
-
-            # Convert to tensor
-            audio_tensor = torch.FloatTensor(audio)
-
-            # Calculate frame parameters
-            frame_samples = max(512, int(self.vad_config.frame_ms * sample_rate / 1000))
-            block_samples = int(self.vad_config.block_seconds * sample_rate)
-
-            # Convert ms to frame counts for hysteresis
-            ms_per_frame = 1000.0 * frame_samples / sample_rate
-            min_speech_frames = max(
-                1, int(round(self.vad_config.min_speech_ms / ms_per_frame))
-            )
-            min_silence_frames = max(
-                1, int(round(self.vad_config.min_silence_ms / ms_per_frame))
-            )
-
-            # State machine with frame counting
-            segments = []
-            in_speech = False
-            above_cnt = 0
-            below_cnt = 0
-            start_sample = None
-
-            for block_start in range(0, len(audio), block_samples):
-                block_end = min(block_start + block_samples, len(audio))
-                block_audio = audio_tensor[block_start:block_end]
-
-                # Process frames within block
-                for frame_start in range(0, len(block_audio), frame_samples):
-                    frame_end = min(frame_start + frame_samples, len(block_audio))
-                    frame_audio = block_audio[frame_start:frame_end]
-
-                    # Skip if frame is too short
-                    if len(frame_audio) < frame_samples:
-                        continue
-
-                    # Calculate frame boundaries in samples
-                    frame_start_sample = block_start + frame_start
-                    frame_end_sample = min(block_start + frame_end, len(audio))
-
-                    # Check RMS gate first
-                    rms_dbfs = self._compute_rms_dbfs(frame_audio.numpy())
-                    if rms_dbfs < self.vad_config.rms_gate_dbfs:
-                        prob = 0.0
-                    else:
-                        # Get VAD probability
-                        prob = self.model(frame_audio, sample_rate).item()
-
-                    # State machine with frame counting (hysteresis)
-                    if not in_speech:
-                        if prob >= self.vad_config.threshold_start:
-                            above_cnt += 1
-                            if above_cnt >= min_speech_frames:
-                                # Start speech segment, backtrack to account for counted frames
-                                start_sample = (
-                                    frame_end_sample - above_cnt * frame_samples
-                                )
-                                in_speech = True
-                                below_cnt = 0
-                        else:
-                            above_cnt = 0
-                    elif prob <= self.vad_config.threshold_end:
-                        below_cnt += 1
-                        if below_cnt >= min_silence_frames:
-                            # End speech segment, backtrack to account for counted frames
-                            end_sample = frame_end_sample - below_cnt * frame_samples
-                            segments.append(
-                                {
-                                    "start": max(0, start_sample) / sample_rate,
-                                    "end": min(end_sample, len(audio)) / sample_rate,
-                                    "confidence": prob,
-                                }
-                            )
-                            in_speech = False
-                            above_cnt = 0
-                            start_sample = None
-                    else:
-                        below_cnt = 0
-
-            # Handle ongoing speech at end
-            if in_speech and start_sample is not None:
-                segments.append(
-                    {
-                        "start": max(0, start_sample) / sample_rate,
-                        "end": audio_duration,
-                        "confidence": 0.0,
-                    }
-                )
-
-            # Post-process segments
-            segments = self._filter_short_segments(segments)
-            segments = self._merge_and_pad_segments(segments, audio_duration)
-
-            if progress and task_id is not None:
-                progress.update(task_id, advance=1)
-
-            logger.info(f"Found {len(segments)} speech segments in {audio_path.name}")
-            return segments
-
-        except Exception as e:
-            logger.exception(f"Error processing VAD for {audio_path.name}: {e}")
+            audio, sample_rate = self._load_audio(audio_path)
+        except (OSError, ValueError):
+            logger.exception("Failed to load audio for %s", audio_path.name)
             return []
+
+        logger.info(
+            "Loaded audio: %.2fs at %sHz", len(audio) / sample_rate, sample_rate
+        )
+
+        try:
+            segments = self._detect_segments(audio, sample_rate)
+        except (RuntimeError, ValueError):
+            logger.exception("Error processing VAD for %s", audio_path.name)
+            return []
+
+        if progress and task_id is not None:
+            progress.update(task_id, advance=1)
+
+        logger.info(
+            "Found %s speech segments in %s", len(segments), audio_path.name
+        )
+        return segments
 
     def save_segments(self, segments: list[dict], output_path: Path) -> None:
         """Save VAD segments to JSON and CSV files."""
@@ -249,35 +312,39 @@ class SileroVAD:
 
             # Save JSON
             json_path = output_path.with_suffix(".json")
-            with open(json_path, "w") as f:
-                json.dump(
-                    {
-                        "segments": segments,
-                        "total_segments": len(segments),
-                        "total_speech_duration": sum(
-                            s["end"] - s["start"] for s in segments
-                        ),
-                        "config": self.vad_config.dict(),
-                    },
-                    f,
-                    indent=2,
-                )
+            json_payload = {
+                "segments": segments,
+                "total_segments": len(segments),
+                "total_speech_duration": sum(
+                    segment["end"] - segment["start"] for segment in segments
+                ),
+                "config": self.vad_config.model_dump(),
+            }
+            json_path.write_text(
+                json.dumps(json_payload, indent=2),
+                encoding="utf-8",
+            )
 
             # Save CSV
             csv_path = output_path.with_suffix(".csv")
-            with open(csv_path, "w") as f:
-                f.write("start,end,duration,confidence\n")
-                for segment in segments:
-                    duration = segment["end"] - segment["start"]
-                    confidence = segment.get("confidence", 0.0)
-                    f.write(
-                        f"{segment['start']:.3f},{segment['end']:.3f},{duration:.3f},{confidence:.3f}\n"
-                    )
+            lines = ["start,end,duration,confidence"]
+            for segment in segments:
+                duration = segment["end"] - segment["start"]
+                confidence = segment.get("confidence", 0.0)
+                lines.append(
+                    f"{segment['start']:.3f},"
+                    f"{segment['end']:.3f},"
+                    f"{duration:.3f},"
+                    f"{confidence:.3f}"
+                )
+            csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-            logger.info(f"Saved VAD results to {json_path} and {csv_path}")
+            logger.info(
+                "Saved VAD results to %s and %s", json_path, csv_path
+            )
 
-        except Exception as e:
-            logger.exception(f"Error saving segments to {output_path}: {e}")
+        except OSError:
+            logger.exception("Error saving segments to %s", output_path)
 
 
 class VADProcessor:
@@ -294,7 +361,8 @@ class VADProcessor:
 
         if not self.config.paths.audio_wav_dir.exists():
             logger.warning(
-                f"Audio WAV directory does not exist: {self.config.paths.audio_wav_dir}"
+                "Audio WAV directory does not exist: %s",
+                self.config.paths.audio_wav_dir,
             )
             return audio_files
 
@@ -302,7 +370,9 @@ class VADProcessor:
         for pattern in ["*.wav", "*.WAV"]:
             audio_files.extend(self.config.paths.audio_wav_dir.glob(pattern))
 
-        logger.info(f"Found {len(audio_files)} audio files for VAD processing")
+        logger.info(
+            "Found %s audio files for VAD processing", len(audio_files)
+        )
         return sorted(audio_files)
 
     def get_output_path(self, audio_path: Path) -> Path:
@@ -360,7 +430,7 @@ class VADProcessor:
 
         for result in results:
             if isinstance(result, Exception):
-                logger.error(f"VAD task failed with exception: {result}")
+                logger.error("VAD task failed with exception: %s", result)
                 failed_count += 1
             else:
                 speaker_name, segments = result
@@ -383,24 +453,13 @@ class VADProcessor:
         """Check if required dependencies are available."""
         errors = []
 
-        try:
-            import torch
-
-            if not torch.cuda.is_available() and not hasattr(torch.backends, "mps"):
-                logger.warning("No GPU acceleration available, using CPU")
-        except ImportError:
-            errors.append("PyTorch is not installed")
+        if not torch.cuda.is_available() and not hasattr(torch.backends, "mps"):
+            logger.warning("No GPU acceleration available, using CPU")
 
         try:
-            import librosa
-        except ImportError:
-            errors.append("librosa is not installed")
-
-        try:
-            # Test loading Silero VAD model
             self.vad.load_model()
-        except Exception as e:
-            errors.append(f"Cannot load Silero VAD model: {e}")
+        except RuntimeError as exc:
+            errors.append(f"Cannot load Silero VAD model: {exc}")
 
         return errors
 
@@ -473,6 +532,6 @@ if __name__ == "__main__":
         console.print(
             f"[green]VAD processing complete! Generated {len(output_files)} files."
         )
-    except Exception as e:
-        console.print(f"[red]VAD processing failed: {e}")
+    except (RuntimeError, OSError) as exc:
+        console.print(f"[red]VAD processing failed: {exc}")
         sys.exit(1)

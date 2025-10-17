@@ -63,9 +63,7 @@ class AudioPreprocessor:
             # Build FFmpeg command
             cmd = self._build_ffmpeg_command(input_path, output_path)
 
-            logger.info(
-                "Processing %s -> %s", input_path.name, output_path.name
-            )
+            logger.info("Processing %s -> %s", input_path.name, output_path.name)
 
             # Run FFmpeg
             process = await asyncio.create_subprocess_exec(
