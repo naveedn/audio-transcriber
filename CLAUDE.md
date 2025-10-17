@@ -125,8 +125,6 @@ The system uses optimal defaults from the specification:
 - Parallel processing for I/O-bound stages (preprocessing, VAD)
 - Sequential Whisper processing to manage memory limits on MacBooks
 
-### Known Issues
-According to the plan document, there may be syntax errors in main.py related to emoji character encoding that need to be fixed before the application is fully functional.
 
 ### Code Style
 - Line length: 88 characters (configured in pyproject.toml)
