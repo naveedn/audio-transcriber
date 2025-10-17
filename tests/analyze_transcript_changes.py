@@ -9,7 +9,7 @@ from pathlib import Path
 def extract_dialogue_from_srt(srt_path):
     """Extract just the dialogue lines from an SRT file."""
     dialogues = []
-    with open(srt_path, 'r', encoding='utf-8') as f:
+    with open(srt_path, encoding="utf-8") as f:
         lines = f.readlines()
 
     i = 0
@@ -25,7 +25,7 @@ def extract_dialogue_from_srt(srt_path):
             while i < len(lines) and lines[i].strip():
                 dialogue_parts.append(lines[i].strip())
                 i += 1
-            dialogue = ' '.join(dialogue_parts)
+            dialogue = " ".join(dialogue_parts)
             dialogues.append((segment_num, dialogue))
         i += 1
 
@@ -37,31 +37,31 @@ def categorize_changes(before_text, after_text):
     changes = []
 
     # Extract speaker and content
-    before_match = re.match(r'\[([\w-]+)\]\s*(.*)', before_text)
-    after_match = re.match(r'\[([\w-]+)\]\s*(.*)', after_text)
+    before_match = re.match(r"\[([\w-]+)\]\s*(.*)", before_text)
+    after_match = re.match(r"\[([\w-]+)\]\s*(.*)", after_text)
 
     if not before_match or not after_match:
-        return ['unknown']
+        return ["unknown"]
 
     before_speaker, before_content = before_match.groups()
     after_speaker, after_content = after_match.groups()
 
     if before_speaker != after_speaker:
-        changes.append('speaker_change')
+        changes.append("speaker_change")
 
     # Capitalization changes
     if before_content != after_content:
         if before_content.lower() == after_content.lower():
             # Count capitalization changes
-            cap_changes = sum(1 for b, a in zip(before_content, after_content) if b != a and b.lower() == a.lower())
+            cap_changes = sum(1 for b, a in zip(before_content, after_content, strict=False) if b != a and b.lower() == a.lower())
             if cap_changes > 0:
-                changes.append(f'capitalization_{cap_changes}')
+                changes.append(f"capitalization_{cap_changes}")
 
         # Punctuation changes
         before_punct = set(re.findall(r'[.,!?;:\-\'"()]', before_content))
         after_punct = set(re.findall(r'[.,!?;:\-\'"()]', after_content))
         if before_punct != after_punct:
-            changes.append('punctuation')
+            changes.append("punctuation")
 
         # Word changes (spelling corrections, etc.)
         before_words = before_content.lower().split()
@@ -69,23 +69,23 @@ def categorize_changes(before_text, after_text):
         if before_words != after_words:
             word_diff = abs(len(before_words) - len(after_words))
             if word_diff > 0:
-                changes.append(f'word_count_diff_{word_diff}')
+                changes.append(f"word_count_diff_{word_diff}")
 
             # Find specific word changes
-            for bw, aw in zip(before_words, after_words):
+            for bw, aw in zip(before_words, after_words, strict=False):
                 if bw != aw:
                     # Check if it's a typo correction
                     if len(bw) > 3 and len(aw) > 3:
                         # Simple edit distance check
                         if abs(len(bw) - len(aw)) <= 2:
-                            changes.append('spelling_correction')
+                            changes.append("spelling_correction")
 
-    return changes if changes else ['no_change']
+    return changes if changes else ["no_change"]
 
 
 def main():
-    before_path = Path('/Users/naveednadjmabadi/code/audio-transcriber/outputs/gpt-cleanup/final_transcript_before_parallelization.srt')
-    after_path = Path('/Users/naveednadjmabadi/code/audio-transcriber/outputs/gpt-cleanup/final_transcript.srt')
+    before_path = Path("/Users/naveednadjmabadi/code/audio-transcriber/outputs/gpt-cleanup/final_transcript_before_parallelization.srt")
+    after_path = Path("/Users/naveednadjmabadi/code/audio-transcriber/outputs/gpt-cleanup/final_transcript.srt")
 
     print("Extracting dialogues from SRT files...")
     before_dialogues = extract_dialogue_from_srt(before_path)
@@ -171,5 +171,5 @@ def main():
             print(f"Segment {seg_num}: {after_dict[seg_num][:100]}...")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

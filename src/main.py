@@ -461,7 +461,7 @@ class AudioPipeline:
                 if target_stages and not continue_after and stage_name in target_stages:
                     remaining_targets = [s for s in target_stages if s in stages_to_run[stages_to_run.index(stage_name)+1:]]
                     if not remaining_targets:
-                        console.print(f"[green]✅ Specified stages completed")
+                        console.print("[green]✅ Specified stages completed")
                         return True
 
             except Exception as e:
@@ -561,7 +561,7 @@ def reset(ctx):
 
 @cli.command()
 @click.confirmation_option(
-    prompt="Are you sure you want to delete all inputs and outputs?"
+    prompt="Are you sure you want to delete all inputs and outputs?",
 )
 @click.pass_context
 def clean(ctx) -> None:

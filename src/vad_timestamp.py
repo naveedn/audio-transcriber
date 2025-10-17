@@ -183,22 +183,21 @@ class SileroVAD:
                                 below_cnt = 0
                         else:
                             above_cnt = 0
+                    elif prob <= self.vad_config.threshold_end:
+                        below_cnt += 1
+                        if below_cnt >= min_silence_frames:
+                            # End speech segment, backtrack to account for counted frames
+                            end_sample = frame_end_sample - below_cnt * frame_samples
+                            segments.append({
+                                "start": max(0, start_sample) / sample_rate,
+                                "end": min(end_sample, len(audio)) / sample_rate,
+                                "confidence": prob,
+                            })
+                            in_speech = False
+                            above_cnt = 0
+                            start_sample = None
                     else:
-                        if prob <= self.vad_config.threshold_end:
-                            below_cnt += 1
-                            if below_cnt >= min_silence_frames:
-                                # End speech segment, backtrack to account for counted frames
-                                end_sample = frame_end_sample - below_cnt * frame_samples
-                                segments.append({
-                                    "start": max(0, start_sample) / sample_rate,
-                                    "end": min(end_sample, len(audio)) / sample_rate,
-                                    "confidence": prob,
-                                })
-                                in_speech = False
-                                above_cnt = 0
-                                start_sample = None
-                        else:
-                            below_cnt = 0
+                        below_cnt = 0
 
             # Handle ongoing speech at end
             if in_speech and start_sample is not None:

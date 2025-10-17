@@ -16,7 +16,7 @@ def truncate_repetitive_sequences(text: str, max_repeat: int = 50) -> str:
     """
     # Pattern to detect 2+ character sequences repeated many times
     # Example: "HAHAHAHA" or "LALALA" or "hehehehe"
-    pattern = r'(.{2,}?)\1{3,}'  # Find patterns repeated 4+ times
+    pattern = r"(.{2,}?)\1{3,}"  # Find patterns repeated 4+ times
 
     def replace_repetition(match):
         """Replace long repetitions with truncated version."""
@@ -32,8 +32,7 @@ def truncate_repetitive_sequences(text: str, max_repeat: int = 50) -> str:
             truncated = pattern_unit * max_repeat
             # Add ellipsis and note about continuation
             return f"{truncated}... [continues]"
-        else:
-            return full_match
+        return full_match
 
     result = re.sub(pattern, replace_repetition, text)
     return result

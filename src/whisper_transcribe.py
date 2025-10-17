@@ -91,9 +91,7 @@ class WhisperTranscriber:
         """Transcribe a single audio segment."""
         try:
             # Ensure model is initialized
-            if self.use_mlx and self.mlx_module is None:
-                self.load_model()
-            elif not self.use_mlx and self.model is None:
+            if (self.use_mlx and self.mlx_module is None) or (not self.use_mlx and self.model is None):
                 self.load_model()
 
             # Apply MLX memory optimization if available
