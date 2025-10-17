@@ -3,13 +3,14 @@
 import asyncio
 import json
 import logging
+import shutil
 import sys
-import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import click
 from dotenv import load_dotenv
+from pydantic import ValidationError
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
@@ -20,10 +21,10 @@ __version__ = "0.1.0"
 from .config import Config, load_config
 
 # Import stage modules with corrected names
-from .ffmpeg_preprocess import preprocess_audio
-from .gpt_cleanup import cleanup_transcript
-from .vad_timestamp import process_vad
-from .whisper_transcribe import transcribe_audio
+from .ffmpeg_preprocess import AudioPreprocessor, preprocess_audio
+from .gpt_cleanup import TranscriptProcessor, cleanup_transcript
+from .vad_timestamp import VADProcessor, process_vad
+from .whisper_transcribe import TranscriptionProcessor, transcribe_audio
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 class PipelineStatus:
     """Manages pipeline execution status and resumability."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config) -> None:
         """Initialize status manager."""
         self.config = config
         self.status_file = config.paths.status_file
@@ -42,10 +43,10 @@ class PipelineStatus:
         """Load status from file."""
         if self.status_file.exists():
             try:
-                with open(self.status_file) as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.warning(f"Could not load status file: {e}")
+                with self.status_file.open() as file_obj:
+                    return json.load(file_obj)
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("Could not load status file: %s", exc)
 
         return {
             "pipeline_start": None,
@@ -82,15 +83,17 @@ class PipelineStatus:
         """Save current status to file."""
         try:
             self.status_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.status_file, "w") as f:
-                json.dump(self.status, f, indent=2)
-        except Exception as e:
-            logger.error(f"Could not save status file: {e}")
+            with self.status_file.open("w") as file_obj:
+                json.dump(self.status, file_obj, indent=2)
+        except OSError as exc:
+            logger.exception("Could not save status file", exc_info=exc)
 
     def start_stage(self, stage_name: str) -> None:
         """Mark a stage as started."""
         self.status["stages"][stage_name]["status"] = "running"
-        self.status["stages"][stage_name]["start_time"] = datetime.now().isoformat()
+        self.status["stages"][stage_name]["start_time"] = (
+            datetime.now(tz=UTC).isoformat()
+        )
         self.save_status()
 
     def get_stage_elapsed_time(self, stage_name: str) -> str:
@@ -101,17 +104,19 @@ class PipelineStatus:
 
         try:
             start_time = datetime.fromisoformat(start_time_str)
-            elapsed = datetime.now() - start_time
+            elapsed = datetime.now(tz=UTC) - start_time
             return str(elapsed).split(".")[0]  # Remove microseconds
-        except:
+        except (ValueError, TypeError):
             return "0:00"
 
-    def complete_stage(self, stage_name: str, success: bool = True) -> None:
+    def complete_stage(self, stage_name: str, *, success: bool = True) -> None:
         """Mark a stage as completed."""
         self.status["stages"][stage_name]["status"] = (
             "completed" if success else "failed"
         )
-        self.status["stages"][stage_name]["end_time"] = datetime.now().isoformat()
+        self.status["stages"][stage_name]["end_time"] = (
+            datetime.now(tz=UTC).isoformat()
+        )
         self.save_status()
 
         # Calculate and display duration
@@ -135,7 +140,7 @@ class PipelineStatus:
             end_time = datetime.fromisoformat(end_time_str)
             duration = end_time - start_time
             return str(duration).split(".")[0]  # Remove microseconds
-        except:
+        except (ValueError, TypeError):
             return "0:00"
 
     def _get_stage_display_name(self, stage_name: str) -> str:
@@ -197,7 +202,7 @@ class PipelineStatus:
                     start = datetime.fromisoformat(info["start_time"])
                     end = datetime.fromisoformat(info["end_time"])
                     duration = str(end - start).split(".")[0]  # Remove microseconds
-                except:
+                except (ValueError, TypeError):
                     duration = "-"
 
             # Color status
@@ -216,7 +221,7 @@ class PipelineStatus:
 class AudioPipeline:
     """Main audio processing pipeline orchestrator."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config) -> None:
         """Initialize the pipeline."""
         self.config = config
         self.status = PipelineStatus(config)
@@ -224,75 +229,66 @@ class AudioPipeline:
     def bootstrap(self) -> bool:
         """Stage 0: Bootstrap - check dependencies and download models."""
         console.print(Panel("🚀 Stage 0: Bootstrap Process", style="bold blue"))
-        stage_start_time = time.time()
 
         try:
-            # Create directories
-            self.config.create_directories()
-            console.print("[green]✅ Created output directories")
-
-            # Validate environment
-            errors = self.config.validate_environment()
-            if errors:
-                for error in errors:
-                    console.print(f"[red]❌ {error}")
-                return False
-            console.print("[green]✅ Environment validation passed")
-
-            # Check FFmpeg
-            from .ffmpeg_preprocess import AudioPreprocessor
-
-            ffmpeg_processor = AudioPreprocessor(self.config)
-            errors = ffmpeg_processor.check_dependencies()
-            if errors:
-                for error in errors:
-                    console.print(f"[red]❌ FFmpeg: {error}")
-                return False
-            console.print("[green]✅ FFmpeg available")
-
-            # Check and load Silero VAD
-            from .vad_timestamp import VADProcessor
-
-            vad_processor = VADProcessor(self.config)
-            errors = vad_processor.check_dependencies()
-            if errors:
-                for error in errors:
-                    console.print(f"[red]❌ Silero VAD: {error}")
-                return False
-            console.print("[green]✅ Silero VAD model loaded")
-
-            # Check and load Whisper
-            from .whisper_transcribe import TranscriptionProcessor
-
-            whisper_processor = TranscriptionProcessor(self.config)
-            errors = whisper_processor.check_dependencies()
-            if errors:
-                for error in errors:
-                    console.print(f"[red]❌ Whisper: {error}")
-                return False
-            console.print("[green]✅ Whisper model loaded")
-
-            # Check OpenAI API
-            if self.config.openai_api_key:
-                from .gpt_cleanup import TranscriptProcessor
-
-                processor = TranscriptProcessor(self.config)
-                errors = processor.check_dependencies()
-                if errors:
-                    for error in errors:
-                        console.print(f"[red]❌ OpenAI API: {error}")
-                    return False
-                console.print("[green]✅ OpenAI API accessible")
-            else:
-                console.print(
-                    "[yellow]⚠️ OpenAI API key not provided - GPT stages will be skipped"
-                )
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Bootstrap failed: {e}")
+            return self._bootstrap_impl()
+        except Exception as exc:
+            logger.exception("Bootstrap failed")
+            console.print(f"[red]❌ Bootstrap failed: {exc}")
             return False
+
+    def _bootstrap_impl(self) -> bool:  # noqa: C901
+        """Execute bootstrap checks and return success state."""
+        # Create directories
+        self.config.create_directories()
+        console.print("[green]✅ Created output directories")
+
+        # Validate environment
+        errors = self.config.validate_environment()
+        if errors:
+            for error in errors:
+                console.print(f"[red]❌ {error}")
+            return False
+        console.print("[green]✅ Environment validation passed")
+
+        ffmpeg_processor = AudioPreprocessor(self.config)
+        errors = ffmpeg_processor.check_dependencies()
+        if errors:
+            for error in errors:
+                console.print(f"[red]❌ FFmpeg: {error}")
+            return False
+        console.print("[green]✅ FFmpeg available")
+
+        vad_processor = VADProcessor(self.config)
+        errors = vad_processor.check_dependencies()
+        if errors:
+            for error in errors:
+                console.print(f"[red]❌ Silero VAD: {error}")
+            return False
+        console.print("[green]✅ Silero VAD model loaded")
+
+        whisper_processor = TranscriptionProcessor(self.config)
+        errors = whisper_processor.check_dependencies()
+        if errors:
+            for error in errors:
+                console.print(f"[red]❌ Whisper: {error}")
+            return False
+        console.print("[green]✅ Whisper model loaded")
+
+        if self.config.openai_api_key:
+            processor = TranscriptProcessor(self.config)
+            errors = processor.check_dependencies()
+            if errors:
+                for error in errors:
+                    console.print(f"[red]❌ OpenAI API: {error}")
+                return False
+            console.print("[green]✅ OpenAI API accessible")
+        else:
+            console.print(
+                "[yellow]⚠️ OpenAI API key not provided - GPT stages will be skipped"
+            )
+
+        return True
 
     async def run_stage1(self) -> bool:
         """Stage 1: Audio preprocessing."""
@@ -300,14 +296,17 @@ class AudioPipeline:
 
         try:
             output_files = await preprocess_audio(self.config)
-            if output_files:
-                console.print(f"[green]Processed {len(output_files)} audio files")
-                return True
-            console.print("[yellow]No audio files processed")
+        except Exception as exc:
+            logger.exception("Stage 1 failed")
+            console.print(f"[red]❌ Stage 1 failed: {exc}")
             return False
-        except Exception as e:
-            logger.error(f"Stage 1 failed: {e}")
-            return False
+
+        if output_files:
+            console.print(f"[green]Processed {len(output_files)} audio files")
+            return True
+
+        console.print("[yellow]No audio files processed")
+        return False
 
     async def run_stage2(self) -> bool:
         """Stage 2: Voice Activity Detection."""
@@ -315,16 +314,19 @@ class AudioPipeline:
 
         try:
             output_files = await process_vad(self.config)
-            if output_files:
-                console.print(
-                    f"[green]Generated VAD timestamps for {len(output_files)} files"
-                )
-                return True
-            console.print("[yellow]No VAD timestamps generated")
+        except Exception as exc:
+            logger.exception("Stage 2 failed")
+            console.print(f"[red]❌ Stage 2 failed: {exc}")
             return False
-        except Exception as e:
-            logger.error(f"Stage 2 failed: {e}")
-            return False
+
+        if output_files:
+            console.print(
+                f"[green]Generated VAD timestamps for {len(output_files)} files"
+            )
+            return True
+
+        console.print("[yellow]No VAD timestamps generated")
+        return False
 
     def run_stage3(self) -> bool:
         """Stage 3: Speech transcription."""
@@ -332,14 +334,17 @@ class AudioPipeline:
 
         try:
             output_files = transcribe_audio(self.config)
-            if output_files:
-                console.print(f"[green]Transcribed {len(output_files)} files")
-                return True
-            console.print("[yellow]No transcriptions generated")
+        except Exception as exc:
+            logger.exception("Stage 3 failed")
+            console.print(f"[red]❌ Stage 3 failed: {exc}")
             return False
-        except Exception as e:
-            logger.error(f"Stage 3 failed: {e}")
-            return False
+
+        if output_files:
+            console.print(f"[green]Transcribed {len(output_files)} files")
+            return True
+
+        console.print("[yellow]No transcriptions generated")
+        return False
 
     def run_stage4(self) -> bool:
         """Stage 4: Final processing."""
@@ -351,19 +356,25 @@ class AudioPipeline:
 
         try:
             output_file = cleanup_transcript(self.config)
-            if output_file:
-                console.print(f"[green]Final transcript created: {output_file.name}")
-                return True
-            console.print("[yellow]No processing performed")
-            return True
-        except Exception as e:
-            logger.error(f"Stage 4 failed: {e}")
+        except Exception as exc:
+            logger.exception("Stage 4 failed")
+            console.print(f"[red]❌ Stage 4 failed: {exc}")
             return False
 
-    async def run_full_pipeline(
-        self, stages: str | None = None, continue_after: bool = False
+        if output_file:
+            console.print(f"[green]Final transcript created: {output_file.name}")
+            return True
+
+        console.print("[yellow]No processing performed")
+        return True
+
+    async def run_full_pipeline(  # noqa: C901, PLR0912, PLR0915
+        self,
+        stages: str | None = None,
+        *,
+        continue_after: bool = False,
     ) -> bool:
-        """Run the complete pipeline, specific stages, or resume from a specific stage."""
+        """Run the complete pipeline, selected stages, or resume progress."""
         console.print(
             Panel(f"🚀 Audio Processing Pipeline v{__version__}", style="bold magenta")
         )
@@ -414,11 +425,13 @@ class AudioPipeline:
 
         # Record pipeline start
         if not self.status.status["pipeline_start"]:
-            self.status.status["pipeline_start"] = datetime.now().isoformat()
+            self.status.status["pipeline_start"] = (
+                datetime.now(tz=UTC).isoformat()
+            )
             self.status.save_status()
 
         # Stage execution mapping
-        stages = {
+        stage_functions = {
             "stage0_bootstrap": self.bootstrap,
             "stage1_preprocess": self.run_stage1,
             "stage2_vad": self.run_stage2,
@@ -442,7 +455,8 @@ class AudioPipeline:
             # Run only the specified stages
             stages_to_run = target_stages
         else:
-            # Run from start_stage to end (or until target stages complete if continue_after)
+            # Run from start_stage to end. If `continue_after` is set, keep running
+            # through the remaining stages once the targets are completed.
             start_index = stage_order.index(start_stage)
             stages_to_run = stage_order[start_index:]
 
@@ -475,7 +489,8 @@ class AudioPipeline:
                     subsequent_stage = stage_order[i]
                     if self.status.is_stage_completed(subsequent_stage):
                         console.print(
-                            f"[yellow]🔄 Resetting {subsequent_stage} (subsequent stage)"
+                            "[yellow]🔄 Resetting "
+                            f"{subsequent_stage} (subsequent stage)"
                         )
                         self.status.status["stages"][subsequent_stage]["status"] = (
                             "pending"
@@ -502,13 +517,13 @@ class AudioPipeline:
 
             try:
                 # Run the stage
-                stage_func = stages[stage_name]
+                stage_func = stage_functions[stage_name]
                 if asyncio.iscoroutinefunction(stage_func):
                     success = await stage_func()
                 else:
                     success = stage_func()
 
-                self.status.complete_stage(stage_name, success)
+                self.status.complete_stage(stage_name, success=success)
 
                 if not success:
                     console.print(f"[red]❌ Pipeline stopped at {stage_name}")
@@ -525,17 +540,19 @@ class AudioPipeline:
                         console.print("[green]✅ Specified stages completed")
                         return True
 
-            except Exception as e:
-                logger.error(f"Stage {stage_name} failed: {e}")
-                self.status.complete_stage(stage_name, False)
-                console.print(f"[red]❌ Pipeline failed at {stage_name}: {e}")
+            except Exception as exc:
+                logger.exception("Stage %s failed", stage_name)
+                self.status.complete_stage(stage_name, success=False)
+                console.print(
+                    f"[red]❌ Pipeline failed at {stage_name}: {exc}"
+                )
                 return False
 
         console.print(Panel("🎉 Pipeline completed successfully!", style="bold green"))
         return True
 
 
-def setup_logging(verbose: bool = False) -> None:
+def setup_logging(*, verbose: bool = False) -> None:
     """Set up logging configuration."""
     level = logging.DEBUG if verbose else logging.INFO
 
@@ -562,9 +579,9 @@ def setup_logging(verbose: bool = False) -> None:
     help="Configuration file",
 )
 @click.pass_context
-def cli(ctx, verbose: bool, config_file: Path | None):
+def cli(ctx: click.Context, *, verbose: bool, config_file: Path | None) -> None:
     """Audio Processing Pipeline for Speech-to-Text Transcription."""
-    setup_logging(verbose)
+    setup_logging(verbose=verbose)
 
     # Load environment variables
     load_dotenv()
@@ -574,15 +591,18 @@ def cli(ctx, verbose: bool, config_file: Path | None):
         config = load_config(config_file)
         ctx.ensure_object(dict)
         ctx.obj["config"] = config
-    except Exception as e:
-        console.print(f"[red]Configuration error: {e}")
+    except (OSError, RuntimeError, ValueError, ValidationError) as exc:
+        console.print(f"[red]Configuration error: {exc}")
         sys.exit(1)
 
 
 @cli.command()
 @click.option(
     "--stage",
-    help="Comma-separated list of stages to run (bootstrap,preprocess,vad,whisper,process)",
+    help=(
+        "Comma-separated list of stages to run "
+        "(bootstrap, preprocess, vad, whisper, process)"
+    ),
 )
 @click.option(
     "--continue",
@@ -591,7 +611,12 @@ def cli(ctx, verbose: bool, config_file: Path | None):
     help="Continue to next stages after specified stages complete",
 )
 @click.pass_context
-def run(ctx, stage: str | None, continue_after: bool):
+def run(
+    ctx: click.Context,
+    stage: str | None,
+    *,
+    continue_after: bool,
+) -> None:
     """Run the complete audio processing pipeline or specific stages."""
     config = ctx.obj["config"]
     pipeline = AudioPipeline(config)
@@ -600,19 +625,20 @@ def run(ctx, stage: str | None, continue_after: bool):
         success = asyncio.run(
             pipeline.run_full_pipeline(stages=stage, continue_after=continue_after)
         )
-        if not success:
-            sys.exit(1)
     except KeyboardInterrupt:
         console.print("\n[yellow]Pipeline interrupted by user")
         sys.exit(1)
-    except Exception as e:
-        console.print(f"[red]Pipeline failed: {e}")
+    except (RuntimeError, OSError, ValueError) as exc:
+        console.print(f"[red]Pipeline failed: {exc}")
+        sys.exit(1)
+
+    if not success:
         sys.exit(1)
 
 
 @cli.command()
 @click.pass_context
-def status(ctx):
+def status(ctx: click.Context) -> None:
     """Show pipeline status."""
     config = ctx.obj["config"]
     status_manager = PipelineStatus(config)
@@ -621,7 +647,7 @@ def status(ctx):
 
 @cli.command()
 @click.pass_context
-def reset(ctx):
+def reset(ctx: click.Context) -> None:
     """Reset pipeline status."""
     config = ctx.obj["config"]
 
@@ -637,10 +663,8 @@ def reset(ctx):
     prompt="Are you sure you want to delete all inputs and outputs?",
 )
 @click.pass_context
-def clean(ctx) -> None:
+def clean(ctx: click.Context) -> None:
     """Reset pipeline and remove all inputs and outputs."""
-    import shutil
-
     config = ctx.obj["config"]
 
     console.print("🧹 Cleaning pipeline...")
@@ -676,7 +700,7 @@ def clean(ctx) -> None:
 
 @cli.command()
 @click.pass_context
-def validate(ctx):
+def validate(ctx: click.Context) -> None:
     """Validate configuration and dependencies."""
     config = ctx.obj["config"]
     pipeline = AudioPipeline(config)

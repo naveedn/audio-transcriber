@@ -1,5 +1,6 @@
 """Configuration module for the audio processing pipeline."""
 
+import json
 import os
 from pathlib import Path
 
@@ -105,11 +106,11 @@ class PathConfig(BaseModel):
 
     @field_validator("*", mode="before")
     @classmethod
-    def resolve_paths(cls, v):
+    def resolve_paths(cls, value: object) -> object:
         """Resolve all paths to absolute paths."""
-        if isinstance(v, (str, Path)):
-            return Path(v).resolve()
-        return v
+        if isinstance(value, (str, Path)):
+            return Path(value).resolve()
+        return value
 
 
 class Config(BaseModel):
@@ -137,24 +138,24 @@ class Config(BaseModel):
         validate_assignment = True
         extra = "forbid"
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, **kwargs: object) -> None:
         """Initialize configuration with environment variables."""
         # Load from environment variables
-        env_overrides = {
+        env_overrides: dict[str, object | None] = {
             "openai_api_key": os.getenv("OPENAI_API_KEY"),
             "huggingface_token": os.getenv("HUGGINGFACE_TOKEN"),
         }
-
-        # Remove None values
-        env_overrides = {k: v for k, v in env_overrides.items() if v is not None}
+        merged_overrides = {
+            key: value for key, value in env_overrides.items() if value is not None
+        }
 
         # Merge with provided kwargs
-        kwargs = {**env_overrides, **kwargs}
+        merged_kwargs: dict[str, object] = {**merged_overrides, **kwargs}
 
-        super().__init__(**kwargs)
+        super().__init__(**merged_kwargs)
 
     def validate_environment(self) -> list[str]:
-        """Validate that all required environment variables and dependencies are available."""
+        """Validate required environment variables and filesystem dependencies."""
         errors = []
 
         # Check required API keys
@@ -171,8 +172,8 @@ class Config(BaseModel):
                 self.paths.gpt_dir,
             ]:
                 dir_path.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            errors.append(f"Cannot create output directories: {e}")
+        except OSError as exc:
+            errors.append(f"Cannot create output directories: {exc}")
 
         # Check if inputs directory exists
         if not self.paths.inputs_dir.exists():
@@ -192,18 +193,18 @@ class Config(BaseModel):
             dir_path.mkdir(parents=True, exist_ok=True)
 
 
-def load_config(config_file: Path | None = None, **overrides) -> Config:
+def load_config(
+    config_file: Path | None = None, **overrides: object
+) -> Config:
     """Load configuration from file and environment variables."""
-    config_data = {}
+    config_data: dict[str, object] = {}
 
     # Load from file if provided
     if config_file and config_file.exists():
-        import json
-
-        with open(config_file) as f:
-            config_data = json.load(f)
+        with config_file.open() as file_obj:
+            config_data = json.load(file_obj)
 
     # Apply overrides
-    config_data.update(overrides)
+    config_data.update(dict(overrides))
 
     return Config(**config_data)
