@@ -1,0 +1,2 @@
+{"id":"audio-transcriber-1","title":"Replace numerical stage identifiers with descriptive names in main.py","description":"","status":"open","priority":2,"issue_type":"task","created_at":"2025-10-16T23:04:45.64959-04:00","updated_at":"2025-10-16T23:04:45.64959-04:00"}
+{"id":"audio-transcriber-2","title":"Rename 'whisper' stage to 'transcribe' for model flexibility","description":"","status":"open","priority":2,"issue_type":"task","created_at":"2025-10-16T23:05:08.033862-04:00","updated_at":"2025-10-16T23:05:08.033862-04:00"}
