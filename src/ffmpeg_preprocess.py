@@ -27,11 +27,16 @@ class AudioPreprocessor:
         """Build the FFmpeg command with optimal settings."""
         return [
             "ffmpeg",
-            "-i", str(input_path),
-            "-ar", str(self.ffmpeg_config.sample_rate),
-            "-ac", str(self.ffmpeg_config.channels),
-            "-c:a", f"pcm_s{self.ffmpeg_config.bit_depth}le",
-            "-af", (
+            "-i",
+            str(input_path),
+            "-ar",
+            str(self.ffmpeg_config.sample_rate),
+            "-ac",
+            str(self.ffmpeg_config.channels),
+            "-c:a",
+            f"pcm_s{self.ffmpeg_config.bit_depth}le",
+            "-af",
+            (
                 f"highpass=f={self.ffmpeg_config.highpass_freq},"
                 f"agate=threshold={self.ffmpeg_config.gate_threshold}:"
                 f"ratio={self.ffmpeg_config.gate_ratio}:"
@@ -91,7 +96,9 @@ class AudioPreprocessor:
         input_files = []
 
         if not self.config.paths.inputs_dir.exists():
-            logger.warning(f"Input directory does not exist: {self.config.paths.inputs_dir}")
+            logger.warning(
+                f"Input directory does not exist: {self.config.paths.inputs_dir}"
+            )
             return input_files
 
         # Look for FLAC files
@@ -132,7 +139,10 @@ class AudioPreprocessor:
                 async with semaphore:
                     output_path = self.get_output_path(input_path)
                     success = await self._process_single_file(
-                        input_path, output_path, progress, task_id,
+                        input_path,
+                        output_path,
+                        progress,
+                        task_id,
                     )
                     return output_path, success
 
@@ -173,7 +183,8 @@ class AudioPreprocessor:
         try:
             result = subprocess.run(
                 ["ffmpeg", "-version"],
-                check=False, capture_output=True,
+                check=False,
+                capture_output=True,
                 text=True,
                 timeout=10,
             )
@@ -189,7 +200,9 @@ class AudioPreprocessor:
         return errors
 
 
-async def preprocess_audio(config: Config, input_files: list[Path] | None = None) -> list[Path]:
+async def preprocess_audio(
+    config: Config, input_files: list[Path] | None = None
+) -> list[Path]:
     """Main function to preprocess audio files."""
     preprocessor = AudioPreprocessor(config)
 
@@ -252,7 +265,9 @@ if __name__ == "__main__":
     # Run preprocessing
     try:
         output_files = asyncio.run(preprocess_audio(config))
-        console.print(f"[green]Preprocessing complete! Generated {len(output_files)} files.")
+        console.print(
+            f"[green]Preprocessing complete! Generated {len(output_files)} files."
+        )
     except Exception as e:
         console.print(f"[red]Preprocessing failed: {e}")
         sys.exit(1)

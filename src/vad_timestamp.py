@@ -49,12 +49,14 @@ class SileroVAD:
 
     def _compute_rms_dbfs(self, audio_chunk: np.ndarray) -> float:
         """Compute RMS in dBFS for audio chunk."""
-        rms = np.sqrt(np.mean(audio_chunk ** 2))
+        rms = np.sqrt(np.mean(audio_chunk**2))
         if rms == 0:
             return -np.inf
         return 20 * np.log10(rms)
 
-    def _merge_and_pad_segments(self, segments: list[dict], audio_duration: float) -> list[dict]:
+    def _merge_and_pad_segments(
+        self, segments: list[dict], audio_duration: float
+    ) -> list[dict]:
         """Merge segments with gap < merge_gap_ms and pad edges, matching reference implementation."""
         if not segments:
             return []
@@ -68,7 +70,11 @@ class SileroVAD:
 
         # Merge segments
         merged = []
-        current = {"start": sorted_segments[0]["start"], "end": sorted_segments[0]["end"], "confidence": sorted_segments[0].get("confidence", 0.0)}
+        current = {
+            "start": sorted_segments[0]["start"],
+            "end": sorted_segments[0]["end"],
+            "confidence": sorted_segments[0].get("confidence", 0.0),
+        }
 
         for segment in sorted_segments[1:]:
             gap = segment["start"] - current["end"]
@@ -82,7 +88,11 @@ class SileroVAD:
             else:
                 # Gap too large, finalize current segment and start new one
                 merged.append(current)
-                current = {"start": segment["start"], "end": segment["end"], "confidence": segment.get("confidence", 0.0)}
+                current = {
+                    "start": segment["start"],
+                    "end": segment["end"],
+                    "confidence": segment.get("confidence", 0.0),
+                }
 
         # Don't forget the last segment
         merged.append(current)
@@ -137,8 +147,12 @@ class SileroVAD:
 
             # Convert ms to frame counts for hysteresis
             ms_per_frame = 1000.0 * frame_samples / sample_rate
-            min_speech_frames = max(1, int(round(self.vad_config.min_speech_ms / ms_per_frame)))
-            min_silence_frames = max(1, int(round(self.vad_config.min_silence_ms / ms_per_frame)))
+            min_speech_frames = max(
+                1, int(round(self.vad_config.min_speech_ms / ms_per_frame))
+            )
+            min_silence_frames = max(
+                1, int(round(self.vad_config.min_silence_ms / ms_per_frame))
+            )
 
             # State machine with frame counting
             segments = []
@@ -178,7 +192,9 @@ class SileroVAD:
                             above_cnt += 1
                             if above_cnt >= min_speech_frames:
                                 # Start speech segment, backtrack to account for counted frames
-                                start_sample = frame_end_sample - above_cnt * frame_samples
+                                start_sample = (
+                                    frame_end_sample - above_cnt * frame_samples
+                                )
                                 in_speech = True
                                 below_cnt = 0
                         else:
@@ -188,11 +204,13 @@ class SileroVAD:
                         if below_cnt >= min_silence_frames:
                             # End speech segment, backtrack to account for counted frames
                             end_sample = frame_end_sample - below_cnt * frame_samples
-                            segments.append({
-                                "start": max(0, start_sample) / sample_rate,
-                                "end": min(end_sample, len(audio)) / sample_rate,
-                                "confidence": prob,
-                            })
+                            segments.append(
+                                {
+                                    "start": max(0, start_sample) / sample_rate,
+                                    "end": min(end_sample, len(audio)) / sample_rate,
+                                    "confidence": prob,
+                                }
+                            )
                             in_speech = False
                             above_cnt = 0
                             start_sample = None
@@ -201,11 +219,13 @@ class SileroVAD:
 
             # Handle ongoing speech at end
             if in_speech and start_sample is not None:
-                segments.append({
-                    "start": max(0, start_sample) / sample_rate,
-                    "end": audio_duration,
-                    "confidence": 0.0,
-                })
+                segments.append(
+                    {
+                        "start": max(0, start_sample) / sample_rate,
+                        "end": audio_duration,
+                        "confidence": 0.0,
+                    }
+                )
 
             # Post-process segments
             segments = self._filter_short_segments(segments)
@@ -230,12 +250,18 @@ class SileroVAD:
             # Save JSON
             json_path = output_path.with_suffix(".json")
             with open(json_path, "w") as f:
-                json.dump({
-                    "segments": segments,
-                    "total_segments": len(segments),
-                    "total_speech_duration": sum(s["end"] - s["start"] for s in segments),
-                    "config": self.vad_config.dict(),
-                }, f, indent=2)
+                json.dump(
+                    {
+                        "segments": segments,
+                        "total_segments": len(segments),
+                        "total_speech_duration": sum(
+                            s["end"] - s["start"] for s in segments
+                        ),
+                        "config": self.vad_config.dict(),
+                    },
+                    f,
+                    indent=2,
+                )
 
             # Save CSV
             csv_path = output_path.with_suffix(".csv")
@@ -244,7 +270,9 @@ class SileroVAD:
                 for segment in segments:
                     duration = segment["end"] - segment["start"]
                     confidence = segment.get("confidence", 0.0)
-                    f.write(f"{segment['start']:.3f},{segment['end']:.3f},{duration:.3f},{confidence:.3f}\n")
+                    f.write(
+                        f"{segment['start']:.3f},{segment['end']:.3f},{duration:.3f},{confidence:.3f}\n"
+                    )
 
             logger.info(f"Saved VAD results to {json_path} and {csv_path}")
 
@@ -265,7 +293,9 @@ class VADProcessor:
         audio_files = []
 
         if not self.config.paths.audio_wav_dir.exists():
-            logger.warning(f"Audio WAV directory does not exist: {self.config.paths.audio_wav_dir}")
+            logger.warning(
+                f"Audio WAV directory does not exist: {self.config.paths.audio_wav_dir}"
+            )
             return audio_files
 
         # Look for WAV files
@@ -280,7 +310,9 @@ class VADProcessor:
         speaker_name = audio_path.stem
         return self.config.paths.silero_dir / f"{speaker_name}_timestamps"
 
-    async def process_files(self, audio_files: list[Path] | None = None) -> dict[str, Path]:
+    async def process_files(
+        self, audio_files: list[Path] | None = None
+    ) -> dict[str, Path]:
         """Process multiple audio files for VAD in parallel."""
         if audio_files is None:
             audio_files = self.find_audio_files()
@@ -302,10 +334,14 @@ class VADProcessor:
             # Create semaphore to limit concurrent processes
             semaphore = asyncio.Semaphore(self.config.max_parallel_vad)
 
-            async def process_with_semaphore(audio_path: Path) -> tuple[str, list[dict]]:
+            async def process_with_semaphore(
+                audio_path: Path,
+            ) -> tuple[str, list[dict]]:
                 async with semaphore:
                     segments = await self.vad.process_audio_file(
-                        audio_path, progress, task_id,
+                        audio_path,
+                        progress,
+                        task_id,
                     )
                     return audio_path.stem, segments
 
@@ -335,7 +371,9 @@ class VADProcessor:
                 else:
                     failed_count += 1
 
-        console.print(f"[green]Successfully processed VAD for {len(successful_outputs)} files")
+        console.print(
+            f"[green]Successfully processed VAD for {len(successful_outputs)} files"
+        )
         if failed_count > 0:
             console.print(f"[red]Failed VAD processing for {failed_count} files")
 
@@ -347,6 +385,7 @@ class VADProcessor:
 
         try:
             import torch
+
             if not torch.cuda.is_available() and not hasattr(torch.backends, "mps"):
                 logger.warning("No GPU acceleration available, using CPU")
         except ImportError:
@@ -366,7 +405,9 @@ class VADProcessor:
         return errors
 
 
-async def process_vad(config: Config, audio_files: list[Path] | None = None) -> dict[str, Path]:
+async def process_vad(
+    config: Config, audio_files: list[Path] | None = None
+) -> dict[str, Path]:
     """Main function to process VAD timestamps."""
     processor = VADProcessor(config)
 
@@ -429,7 +470,9 @@ if __name__ == "__main__":
     # Run VAD processing
     try:
         output_files = asyncio.run(process_vad(config))
-        console.print(f"[green]VAD processing complete! Generated {len(output_files)} files.")
+        console.print(
+            f"[green]VAD processing complete! Generated {len(output_files)} files."
+        )
     except Exception as e:
         console.print(f"[red]VAD processing failed: {e}")
         sys.exit(1)

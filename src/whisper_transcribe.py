@@ -38,14 +38,18 @@ class WhisperTranscriber:
         """Initialize Whisper implementation (MLX Whisper doesn't require model loading)."""
         try:
             import mlx_whisper
+
             self.mlx_module = mlx_whisper
             self.use_mlx = True
             logger.info("MLX Whisper available for Apple Silicon optimization")
 
         except ImportError:
-            logger.warning("⚠️ MLX Whisper not available, falling back to standard Whisper")
+            logger.warning(
+                "⚠️ MLX Whisper not available, falling back to standard Whisper"
+            )
             try:
                 import whisper
+
                 self.model = whisper.load_model(self.whisper_config.model)
                 self.use_mlx = False
                 logger.info("Standard Whisper model loaded successfully")
@@ -91,13 +95,16 @@ class WhisperTranscriber:
         """Transcribe a single audio segment."""
         try:
             # Ensure model is initialized
-            if (self.use_mlx and self.mlx_module is None) or (not self.use_mlx and self.model is None):
+            if (self.use_mlx and self.mlx_module is None) or (
+                not self.use_mlx and self.model is None
+            ):
                 self.load_model()
 
             # Apply MLX memory optimization if available
             if self.use_mlx:
                 try:
                     import mlx.core as mx
+
                     mx.clear_cache()
                 except ImportError:
                     pass  # MLX core not available, continue without memory management
@@ -139,19 +146,23 @@ class WhisperTranscriber:
             gap_ms = (next_segment["start"] - current_segment["end"]) * 1000
 
             # Check if both segments are short enough to merge
-            current_duration = (current_segment["end"] - current_segment["start"]) * 1000
+            current_duration = (
+                current_segment["end"] - current_segment["start"]
+            ) * 1000
             next_duration = (next_segment["end"] - next_segment["start"]) * 1000
 
             should_merge = (
-                gap_ms <= self.whisper_config.merge_sentence_gap_ms and
-                current_duration < self.whisper_config.min_sentence_ms and
-                next_duration < self.whisper_config.min_sentence_ms
+                gap_ms <= self.whisper_config.merge_sentence_gap_ms
+                and current_duration < self.whisper_config.min_sentence_ms
+                and next_duration < self.whisper_config.min_sentence_ms
             )
 
             if should_merge:
                 # Merge segments
                 current_segment["end"] = next_segment["end"]
-                current_segment["text"] = current_segment["text"].strip() + " " + next_segment["text"].strip()
+                current_segment["text"] = (
+                    current_segment["text"].strip() + " " + next_segment["text"].strip()
+                )
 
                 # Merge words if available
                 if "words" in current_segment and "words" in next_segment:
@@ -176,12 +187,14 @@ class WhisperTranscriber:
             text = segment["text"].strip()
 
             if text:  # Only include non-empty segments
-                srt_lines.extend([
-                    str(i),
-                    f"{start_time} --> {end_time}",
-                    text,
-                    "",  # Empty line between segments
-                ])
+                srt_lines.extend(
+                    [
+                        str(i),
+                        f"{start_time} --> {end_time}",
+                        text,
+                        "",  # Empty line between segments
+                    ]
+                )
 
         return "\n".join(srt_lines)
 
@@ -225,7 +238,10 @@ class WhisperTranscriber:
 
                 # Extract audio segment
                 audio_segment = self._extract_audio_segment(
-                    audio, sample_rate, start_time, end_time,
+                    audio,
+                    sample_rate,
+                    start_time,
+                    end_time,
                 )
 
                 if len(audio_segment) < sample_rate * 0.1:  # Skip very short segments
@@ -250,7 +266,9 @@ class WhisperTranscriber:
 
             # Merge sentence segments if enabled
             if self.whisper_config.split_sentences:
-                transcribed_segments = self._merge_sentence_segments(transcribed_segments)
+                transcribed_segments = self._merge_sentence_segments(
+                    transcribed_segments
+                )
 
             # Combine all text
             full_text = " ".join(segment["text"] for segment in transcribed_segments)
@@ -263,7 +281,9 @@ class WhisperTranscriber:
                 "total_segments": len(transcribed_segments),
             }
 
-            logger.info(f"Transcribed {len(transcribed_segments)} segments for {audio_path.name}")
+            logger.info(
+                f"Transcribed {len(transcribed_segments)} segments for {audio_path.name}"
+            )
             return result
 
         except Exception as e:
@@ -318,11 +338,15 @@ class TranscriptionProcessor:
         audio_vad_pairs = []
 
         if not self.config.paths.audio_wav_dir.exists():
-            logger.warning(f"Audio WAV directory does not exist: {self.config.paths.audio_wav_dir}")
+            logger.warning(
+                f"Audio WAV directory does not exist: {self.config.paths.audio_wav_dir}"
+            )
             return audio_vad_pairs
 
         if not self.config.paths.silero_dir.exists():
-            logger.warning(f"VAD directory does not exist: {self.config.paths.silero_dir}")
+            logger.warning(
+                f"VAD directory does not exist: {self.config.paths.silero_dir}"
+            )
             return audio_vad_pairs
 
         # Find audio files
@@ -348,7 +372,9 @@ class TranscriptionProcessor:
         speaker_name = audio_path.stem
         return self.config.paths.whisper_dir / f"{speaker_name}_transcript"
 
-    def process_files(self, audio_vad_pairs: list[tuple[Path, Path]] | None = None) -> dict[str, Path]:
+    def process_files(
+        self, audio_vad_pairs: list[tuple[Path, Path]] | None = None
+    ) -> dict[str, Path]:
         """Process multiple audio files for transcription sequentially."""
         if audio_vad_pairs is None:
             audio_vad_pairs = self.find_audio_and_vad_files()
@@ -368,7 +394,6 @@ class TranscriptionProcessor:
             TaskProgressColumn(),
             console=console,
         ) as progress:
-
             for audio_path, vad_path in audio_vad_pairs:
                 speaker_name = audio_path.stem
                 output_path = self.get_output_path(audio_path)
@@ -389,15 +414,22 @@ class TranscriptionProcessor:
                 try:
                     # Transcribe file
                     transcription = self.transcriber.transcribe_file(
-                        audio_path, vad_path, progress, task_id,
+                        audio_path,
+                        vad_path,
+                        progress,
+                        task_id,
                     )
 
                     if transcription["segments"]:
                         # Save transcription
                         self.transcriber.save_transcription(
-                            transcription, output_path, speaker_name,
+                            transcription,
+                            output_path,
+                            speaker_name,
                         )
-                        successful_outputs[speaker_name] = output_path.with_suffix(".json")
+                        successful_outputs[speaker_name] = output_path.with_suffix(
+                            ".json"
+                        )
 
                         progress.update(task_id, description=f"[green] {speaker_name}")
                     else:
@@ -409,7 +441,9 @@ class TranscriptionProcessor:
                     failed_count += 1
                     progress.update(task_id, description=f"[red] {speaker_name}")
 
-        console.print(f"[green]Successfully transcribed {len(successful_outputs)} files")
+        console.print(
+            f"[green]Successfully transcribed {len(successful_outputs)} files"
+        )
         if failed_count > 0:
             console.print(f"[red]Failed to transcribe {failed_count} files")
 
@@ -422,11 +456,13 @@ class TranscriptionProcessor:
         # Try MLX Whisper first
         try:
             import mlx_whisper
+
             logger.info("MLX Whisper is available for Apple Silicon optimization")
         except ImportError:
             # Fall back to standard Whisper
             try:
                 import whisper
+
                 logger.info("Standard Whisper is available")
             except ImportError:
                 errors.append("Neither MLX Whisper nor standard Whisper is installed")
@@ -520,7 +556,9 @@ if __name__ == "__main__":
     # Run transcription
     try:
         output_files = transcribe_audio(config)
-        console.print(f"[green]Transcription complete! Generated {len(output_files)} files.")
+        console.print(
+            f"[green]Transcription complete! Generated {len(output_files)} files."
+        )
     except Exception as e:
         console.print(f"[red]Transcription failed: {e}")
         sys.exit(1)

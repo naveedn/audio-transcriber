@@ -50,11 +50,31 @@ class PipelineStatus:
         return {
             "pipeline_start": None,
             "stages": {
-                "stage0_bootstrap": {"status": "pending", "start_time": None, "end_time": None},
-                "stage1_preprocess": {"status": "pending", "start_time": None, "end_time": None},
-                "stage2_vad": {"status": "pending", "start_time": None, "end_time": None},
-                "stage3_whisper": {"status": "pending", "start_time": None, "end_time": None},
-                "stage4_process": {"status": "pending", "start_time": None, "end_time": None},
+                "stage0_bootstrap": {
+                    "status": "pending",
+                    "start_time": None,
+                    "end_time": None,
+                },
+                "stage1_preprocess": {
+                    "status": "pending",
+                    "start_time": None,
+                    "end_time": None,
+                },
+                "stage2_vad": {
+                    "status": "pending",
+                    "start_time": None,
+                    "end_time": None,
+                },
+                "stage3_whisper": {
+                    "status": "pending",
+                    "start_time": None,
+                    "end_time": None,
+                },
+                "stage4_process": {
+                    "status": "pending",
+                    "start_time": None,
+                    "end_time": None,
+                },
             },
         }
 
@@ -88,7 +108,9 @@ class PipelineStatus:
 
     def complete_stage(self, stage_name: str, success: bool = True) -> None:
         """Mark a stage as completed."""
-        self.status["stages"][stage_name]["status"] = "completed" if success else "failed"
+        self.status["stages"][stage_name]["status"] = (
+            "completed" if success else "failed"
+        )
         self.status["stages"][stage_name]["end_time"] = datetime.now().isoformat()
         self.save_status()
 
@@ -134,8 +156,11 @@ class PipelineStatus:
     def get_resume_stage(self) -> str | None:
         """Get the next stage to run for resuming."""
         stage_order = [
-            "stage0_bootstrap", "stage1_preprocess", "stage2_vad",
-            "stage3_whisper", "stage4_process",
+            "stage0_bootstrap",
+            "stage1_preprocess",
+            "stage2_vad",
+            "stage3_whisper",
+            "stage4_process",
         ]
 
         for stage in stage_order:
@@ -216,6 +241,7 @@ class AudioPipeline:
 
             # Check FFmpeg
             from .ffmpeg_preprocess import AudioPreprocessor
+
             ffmpeg_processor = AudioPreprocessor(self.config)
             errors = ffmpeg_processor.check_dependencies()
             if errors:
@@ -226,6 +252,7 @@ class AudioPipeline:
 
             # Check and load Silero VAD
             from .vad_timestamp import VADProcessor
+
             vad_processor = VADProcessor(self.config)
             errors = vad_processor.check_dependencies()
             if errors:
@@ -236,6 +263,7 @@ class AudioPipeline:
 
             # Check and load Whisper
             from .whisper_transcribe import TranscriptionProcessor
+
             whisper_processor = TranscriptionProcessor(self.config)
             errors = whisper_processor.check_dependencies()
             if errors:
@@ -247,6 +275,7 @@ class AudioPipeline:
             # Check OpenAI API
             if self.config.openai_api_key:
                 from .gpt_cleanup import TranscriptProcessor
+
                 processor = TranscriptProcessor(self.config)
                 errors = processor.check_dependencies()
                 if errors:
@@ -255,7 +284,9 @@ class AudioPipeline:
                     return False
                 console.print("[green]✅ OpenAI API accessible")
             else:
-                console.print("[yellow]⚠️ OpenAI API key not provided - GPT stages will be skipped")
+                console.print(
+                    "[yellow]⚠️ OpenAI API key not provided - GPT stages will be skipped"
+                )
 
             return True
 
@@ -285,7 +316,9 @@ class AudioPipeline:
         try:
             output_files = await process_vad(self.config)
             if output_files:
-                console.print(f"[green]Generated VAD timestamps for {len(output_files)} files")
+                console.print(
+                    f"[green]Generated VAD timestamps for {len(output_files)} files"
+                )
                 return True
             console.print("[yellow]No VAD timestamps generated")
             return False
@@ -308,7 +341,6 @@ class AudioPipeline:
             logger.error(f"Stage 3 failed: {e}")
             return False
 
-
     def run_stage4(self) -> bool:
         """Stage 4: Final processing."""
         console.print(Panel("✨ Stage 4: Final Processing", style="bold blue"))
@@ -328,9 +360,13 @@ class AudioPipeline:
             logger.error(f"Stage 4 failed: {e}")
             return False
 
-    async def run_full_pipeline(self, stages: str | None = None, continue_after: bool = False) -> bool:
+    async def run_full_pipeline(
+        self, stages: str | None = None, continue_after: bool = False
+    ) -> bool:
         """Run the complete pipeline, specific stages, or resume from a specific stage."""
-        console.print(Panel(f"🚀 Audio Processing Pipeline v{__version__}", style="bold magenta"))
+        console.print(
+            Panel(f"🚀 Audio Processing Pipeline v{__version__}", style="bold magenta")
+        )
 
         # Stage name mapping
         stage_mapping = {
@@ -349,7 +385,9 @@ class AudioPipeline:
             # Validate stage names
             invalid_stages = [name for name in stage_names if name not in stage_mapping]
             if invalid_stages:
-                console.print(f"[red]❌ Invalid stage names: {', '.join(invalid_stages)}")
+                console.print(
+                    f"[red]❌ Invalid stage names: {', '.join(invalid_stages)}"
+                )
                 console.print(f"[cyan]Valid stages: {', '.join(stage_mapping.keys())}")
                 return False
 
@@ -359,7 +397,9 @@ class AudioPipeline:
 
             console.print(f"[cyan]Running stages: {', '.join(stage_names)}")
             if continue_after:
-                console.print("[cyan]Will continue to remaining stages after completion")
+                console.print(
+                    "[cyan]Will continue to remaining stages after completion"
+                )
         else:
             # No specific stages - resume from where we left off or start from beginning
             start_stage = self.status.get_resume_stage()
@@ -388,8 +428,11 @@ class AudioPipeline:
 
         # Get ordered list of stages to run
         stage_order = [
-            "stage0_bootstrap", "stage1_preprocess", "stage2_vad",
-            "stage3_whisper", "stage4_process",
+            "stage0_bootstrap",
+            "stage1_preprocess",
+            "stage2_vad",
+            "stage3_whisper",
+            "stage4_process",
         ]
 
         start_index = stage_order.index(start_stage)
@@ -405,14 +448,18 @@ class AudioPipeline:
 
             if target_stages and continue_after:
                 # Find the last target stage and include all stages up to end
-                last_target_index = max(stage_order.index(stage) for stage in target_stages)
+                last_target_index = max(
+                    stage_order.index(stage) for stage in target_stages
+                )
                 stages_to_run = stage_order[start_index:]
 
         # Reset manually specified stages to pending (force re-run)
         if target_stages:
             for stage_name in target_stages:
                 if self.status.is_stage_completed(stage_name):
-                    console.print(f"[yellow]🔄 Resetting {stage_name} (manually specified)")
+                    console.print(
+                        f"[yellow]🔄 Resetting {stage_name} (manually specified)"
+                    )
                     self.status.status["stages"][stage_name]["status"] = "pending"
                     self.status.status["stages"][stage_name]["start_time"] = None
                     self.status.status["stages"][stage_name]["end_time"] = None
@@ -427,17 +474,27 @@ class AudioPipeline:
                 for i in range(last_target_index + 1, len(stage_order)):
                     subsequent_stage = stage_order[i]
                     if self.status.is_stage_completed(subsequent_stage):
-                        console.print(f"[yellow]🔄 Resetting {subsequent_stage} (subsequent stage)")
-                        self.status.status["stages"][subsequent_stage]["status"] = "pending"
-                        self.status.status["stages"][subsequent_stage]["start_time"] = None
-                        self.status.status["stages"][subsequent_stage]["end_time"] = None
+                        console.print(
+                            f"[yellow]🔄 Resetting {subsequent_stage} (subsequent stage)"
+                        )
+                        self.status.status["stages"][subsequent_stage]["status"] = (
+                            "pending"
+                        )
+                        self.status.status["stages"][subsequent_stage]["start_time"] = (
+                            None
+                        )
+                        self.status.status["stages"][subsequent_stage]["end_time"] = (
+                            None
+                        )
 
             self.status.save_status()
 
         # Run stages
         for stage_name in stages_to_run:
             # Only skip completed stages if they weren't manually specified
-            if self.status.is_stage_completed(stage_name) and (not target_stages or stage_name not in target_stages):
+            if self.status.is_stage_completed(stage_name) and (
+                not target_stages or stage_name not in target_stages
+            ):
                 console.print(f"[green]✅ Skipping {stage_name} (already completed)")
                 continue
 
@@ -459,7 +516,11 @@ class AudioPipeline:
 
                 # If this was the last target stage and we're not continuing, stop here
                 if target_stages and not continue_after and stage_name in target_stages:
-                    remaining_targets = [s for s in target_stages if s in stages_to_run[stages_to_run.index(stage_name)+1:]]
+                    remaining_targets = [
+                        s
+                        for s in target_stages
+                        if s in stages_to_run[stages_to_run.index(stage_name) + 1 :]
+                    ]
                     if not remaining_targets:
                         console.print("[green]✅ Specified stages completed")
                         return True
@@ -495,7 +556,11 @@ def setup_logging(verbose: bool = False) -> None:
 @click.group()
 @click.version_option(__version__)
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
-@click.option("--config-file", type=click.Path(exists=True, path_type=Path), help="Configuration file")
+@click.option(
+    "--config-file",
+    type=click.Path(exists=True, path_type=Path),
+    help="Configuration file",
+)
 @click.pass_context
 def cli(ctx, verbose: bool, config_file: Path | None):
     """Audio Processing Pipeline for Speech-to-Text Transcription."""
@@ -515,8 +580,16 @@ def cli(ctx, verbose: bool, config_file: Path | None):
 
 
 @cli.command()
-@click.option("--stage", help="Comma-separated list of stages to run (bootstrap,preprocess,vad,whisper,process)")
-@click.option("--continue", "continue_after", is_flag=True, help="Continue to next stages after specified stages complete")
+@click.option(
+    "--stage",
+    help="Comma-separated list of stages to run (bootstrap,preprocess,vad,whisper,process)",
+)
+@click.option(
+    "--continue",
+    "continue_after",
+    is_flag=True,
+    help="Continue to next stages after specified stages complete",
+)
 @click.pass_context
 def run(ctx, stage: str | None, continue_after: bool):
     """Run the complete audio processing pipeline or specific stages."""
@@ -524,7 +597,9 @@ def run(ctx, stage: str | None, continue_after: bool):
     pipeline = AudioPipeline(config)
 
     try:
-        success = asyncio.run(pipeline.run_full_pipeline(stages=stage, continue_after=continue_after))
+        success = asyncio.run(
+            pipeline.run_full_pipeline(stages=stage, continue_after=continue_after)
+        )
         if not success:
             sys.exit(1)
     except KeyboardInterrupt:
@@ -533,8 +608,6 @@ def run(ctx, stage: str | None, continue_after: bool):
     except Exception as e:
         console.print(f"[red]Pipeline failed: {e}")
         sys.exit(1)
-
-
 
 
 @cli.command()

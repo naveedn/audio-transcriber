@@ -53,7 +53,11 @@ def categorize_changes(before_text, after_text):
     if before_content != after_content:
         if before_content.lower() == after_content.lower():
             # Count capitalization changes
-            cap_changes = sum(1 for b, a in zip(before_content, after_content, strict=False) if b != a and b.lower() == a.lower())
+            cap_changes = sum(
+                1
+                for b, a in zip(before_content, after_content, strict=False)
+                if b != a and b.lower() == a.lower()
+            )
             if cap_changes > 0:
                 changes.append(f"capitalization_{cap_changes}")
 
@@ -84,8 +88,12 @@ def categorize_changes(before_text, after_text):
 
 
 def main():
-    before_path = Path("/Users/naveednadjmabadi/code/audio-transcriber/outputs/gpt-cleanup/final_transcript_before_parallelization.srt")
-    after_path = Path("/Users/naveednadjmabadi/code/audio-transcriber/outputs/gpt-cleanup/final_transcript.srt")
+    before_path = Path(
+        "/Users/naveednadjmabadi/code/audio-transcriber/outputs/gpt-cleanup/final_transcript_before_parallelization.srt"
+    )
+    after_path = Path(
+        "/Users/naveednadjmabadi/code/audio-transcriber/outputs/gpt-cleanup/final_transcript.srt"
+    )
 
     print("Extracting dialogues from SRT files...")
     before_dialogues = extract_dialogue_from_srt(before_path)
@@ -111,9 +119,9 @@ def main():
     total_changes = 0
     identical_segments = 0
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("CHANGE ANALYSIS")
-    print("="*80)
+    print("=" * 80)
 
     # Compare overlapping segments
     for seg_num in sorted(before_nums):
@@ -136,15 +144,15 @@ def main():
     print(f"Changed segments: {total_changes}")
     print(f"Change rate: {100 * total_changes / len(before_nums & after_nums):.1f}%")
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("CHANGE CATEGORIES")
-    print("="*80)
+    print("=" * 80)
     for category, count in sorted(change_categories.items(), key=lambda x: -x[1]):
         print(f"{category:30s}: {count:5d} occurrences")
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("EXAMPLE CHANGES")
-    print("="*80)
+    print("=" * 80)
     for category in sorted(examples.keys()):
         print(f"\n{category.upper()}:")
         for seg_num, before, after in examples[category][:2]:
@@ -155,18 +163,18 @@ def main():
     # Find segments only in before (removed)
     removed_segments = before_nums - after_nums
     if removed_segments:
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("REMOVED SEGMENTS")
-        print("="*80)
+        print("=" * 80)
         for seg_num in sorted(removed_segments):
             print(f"Segment {seg_num}: {before_dict[seg_num][:100]}...")
 
     # Find segments only in after (added - shouldn't happen)
     added_segments = after_nums - before_nums
     if added_segments:
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("ADDED SEGMENTS")
-        print("="*80)
+        print("=" * 80)
         for seg_num in sorted(added_segments):
             print(f"Segment {seg_num}: {after_dict[seg_num][:100]}...")
 

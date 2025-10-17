@@ -45,7 +45,10 @@ test_cases = [
     ("LALALA" * 200, "Long LALALA (200 times) - SHOULD truncate"),
     ("hehe" * 150, "Long hehe (150 times) - SHOULD truncate"),
     ("Normal text here", "Normal text - should NOT change"),
-    ("Some text HAHAHAHA more text", "Mixed content - should NOT truncate short sequences"),
+    (
+        "Some text HAHAHAHA more text",
+        "Mixed content - should NOT truncate short sequences",
+    ),
     ("A" * 1000, "Single char repeated 1000 times - SHOULD truncate"),
 ]
 
@@ -54,7 +57,9 @@ for text, description in test_cases:
     original_len = len(text)
     truncated = truncate_repetitive_sequences(text)
     new_len = len(truncated)
-    reduction = ((original_len - new_len) / original_len * 100) if original_len > 0 else 0
+    reduction = (
+        ((original_len - new_len) / original_len * 100) if original_len > 0 else 0
+    )
 
     print(f"Test: {description}")
     print(f"  Original length: {original_len}")
