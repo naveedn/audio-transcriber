@@ -43,9 +43,22 @@ uv run transcribe --help
 # Run specific commands
 uv run transcribe validate    # Check dependencies and API keys
 uv run transcribe status      # Show pipeline status
-uv run transcribe run         # Execute full pipeline
-uv run transcribe run-stage preprocess  # Run specific stage
+uv run transcribe run         # Execute full pipeline (uses default Whisper)
+uv run transcribe run --stage preprocess  # Run specific stage
 uv run transcribe reset       # Reset pipeline status
+
+# Model Configuration (CLI Options)
+# Default Whisper model:
+uv run transcribe run
+
+# Parakeet with non-streaming mode:
+uv run transcribe run --model parakeet
+
+# Parakeet with streaming mode (cross-segment context awareness):
+uv run transcribe run --model parakeet --streaming
+
+# Run only the transcribe stage with Parakeet streaming:
+uv run transcribe run --stage transcribe --model parakeet --streaming
 ```
 
 ### Testing
@@ -54,20 +67,35 @@ uv run transcribe reset       # Reset pipeline status
 # Test directory exists at ./tests/ but is empty
 ```
 
+### Issue Tracking
+```bash
+# This project uses beads (bd tool) for issue tracking
+# All new work should be tracked using bd instead of markdown files
+
+# Common bd commands:
+bd create "Issue title"           # Create a new issue
+bd list                           # List all issues
+bd show <issue-id>                # Show issue details
+bd update <issue-id>              # Update an issue
+bd close <issue-id>               # Close an issue
+```
+
 ## Architecture
 
 ### Pipeline Stages
 The system processes audio through a 5-stage pipeline:
 
 ```
-Audio Files → [Stage 0] → [Stage 1] → [Stage 2] → [Stage 3] → [Stage 4] → Final Transcript
-              Bootstrap   preprocess  Silero     Whisper      GPT
+Audio Files → [Stage 0] → [Stage 1] → [Stage 2] → [Stage 3]    → [Stage 4] → Final Transcript
+              Bootstrap   preprocess  Silero     Transcribe   GPT
+                                                 (Whisper/
+                                                  Parakeet)
 ```
 
 1. **Stage 0: Bootstrap** - Model download and environment validation
 2. **Stage 1: Audio Preprocess** - FLAC to 16kHz mono WAV conversion using FFmpeg
 3. **Stage 2: Silero VAD** - Voice Activity Detection for speech segmentation
-4. **Stage 3: Whisper Transcribe** - Speech-to-text transcription with timestamps
+4. **Stage 3: Transcribe** - Speech-to-text transcription with timestamps (Whisper or Parakeet)
 5. **Stage 4: GPT Processing** - Intelligent transcript merging and cleanup
 
 ### Key Components
@@ -76,8 +104,11 @@ Audio Files → [Stage 0] → [Stage 1] → [Stage 2] → [Stage 3] → [Stage 4
 - **src/main.py**: CLI interface and pipeline orchestration using Click
 - **src/ffmpeg_preprocess.py**: Audio preprocessing with parallel processing
 - **src/vad_timestamp.py**: Silero VAD integration for speech detection
-- **src/whisper_transcribe.py**: MLX Whisper for Apple Silicon optimization
-- **src/gpt_merge.py**: Multi-speaker transcript merging
+- **src/transcribe.py**: Speech-to-text transcription coordinator (delegates to strategy pattern)
+- **src/transcription/**: Strategy pattern implementation for multiple transcription models
+  - **strategy.py**: Base strategy class and factory function
+  - **whisper_strategy.py**: Whisper (MLX and standard) implementation
+  - **parakeet_strategy.py**: Parakeet (streaming and non-streaming) implementation
 - **src/gpt_cleanup.py**: Final transcript post-processing
 
 ### Directory Structure
@@ -109,17 +140,21 @@ HUGGINGFACE_TOKEN=your_huggingface_token_here  # optional
 The system uses optimal defaults from the specification:
 - FFmpeg: 16kHz mono with noise gate and high-pass filter
 - Silero VAD: Tuned thresholds for speech detection
-- Whisper: Small.en model with deterministic decoding
+- Transcription: Whisper small.en model with deterministic decoding (Parakeet models also supported)
 - GPT: OpenAI API for intelligent post-processing
 
 ## Technology Stack
 
 - **Python 3.11+** with uv package manager
 - **Audio Processing**: FFmpeg, librosa, soundfile
-- **ML/AI**: MLX Whisper (Apple Silicon), Silero VAD, OpenAI API
+- **ML/AI**:
+  - Transcription: MLX Whisper, Parakeet-MLX (Apple Silicon optimized)
+  - VAD: Silero VAD
+  - Post-processing: OpenAI API
 - **CLI**: Click with Rich console interface
 - **Configuration**: Pydantic with type validation
 - **Async**: asyncio for I/O-bound operations
+- **Architecture**: Strategy Pattern for multi-model support
 
 ## Development Notes
 
@@ -140,4 +175,6 @@ The system uses optimal defaults from the specification:
 
 - **OpenAI API**: Required for GPT-based transcript processing
 - **HuggingFace**: Optional, for accessing gated models
-- **MLX Whisper**: Automatic fallback to standard Whisper if unavailable
+- **Transcription Models**:
+  - **MLX Whisper**: Automatic fallback to standard Whisper if unavailable
+  - **Parakeet-MLX**: Optional, only required when using Parakeet models
