@@ -50,12 +50,39 @@ class SileroVADConfig(BaseModel):
     )
 
 
-class WhisperConfig(BaseModel):
-    """Configuration for Whisper transcription."""
+class ModelConfig(BaseModel):
+    """Configuration for transcription models (Whisper or Parakeet).
 
-    model: str = Field(default="small.en", description="Whisper model size/name")
+    The model field determines which transcription engine is used:
+    - Models containing 'whisper': Use Whisper (MLX or standard)
+    - Models containing 'parakeet': Use Parakeet (with optional streaming)
+    """
+
+    model: str = Field(
+        default="small.en",
+        description=(
+            "Model name/repository (e.g., 'small.en' for Whisper or "
+            "'mlx-community/parakeet-tdt-0.6b-v3' for Parakeet)"
+        ),
+    )
     language: str = Field(default="en", description="Language hint")
-    temperature: float = Field(default=0.0, description="Decoding temperature")
+    temperature: float = Field(
+        default=0.0, description="Decoding temperature (Whisper only)"
+    )
+
+    # Streaming context settings (Parakeet only)
+    use_streaming: bool = Field(
+        default=False,
+        description="Use streaming context for cross-segment awareness (Parakeet only)",
+    )
+    context_frames: tuple[int, int] = Field(
+        default=(256, 256),
+        description=(
+            "Left and right context frames for streaming (Parakeet only, 256 ≈ 2.56s)"
+        ),
+    )
+
+    # Sentence merging settings (applies to all models)
     split_sentences: bool = Field(
         default=True, description="Split into sentence segments"
     )
@@ -117,7 +144,7 @@ class Config(BaseModel):
 
     ffmpeg: FFmpegConfig = Field(default_factory=FFmpegConfig)
     silero: SileroVADConfig = Field(default_factory=SileroVADConfig)
-    whisper: WhisperConfig = Field(default_factory=WhisperConfig)
+    model: ModelConfig = Field(default_factory=ModelConfig)
     gpt: GPTConfig = Field(default_factory=GPTConfig)
     paths: PathConfig = Field(default_factory=PathConfig)
 

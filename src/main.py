@@ -22,8 +22,8 @@ from .config import Config, load_config
 # Import stage modules with corrected names
 from .ffmpeg_preprocess import preprocess_audio
 from .gpt_cleanup import cleanup_transcript
+from .transcribe import transcribe_audio
 from .vad_timestamp import process_vad
-from .whisper_transcribe import transcribe_audio
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -262,10 +262,10 @@ class AudioPipeline:
             console.print("[green]✅ Silero VAD model loaded")
 
             # Check and load Whisper
-            from .whisper_transcribe import TranscriptionProcessor
+            from .transcribe import TranscriptionProcessor
 
-            whisper_processor = TranscriptionProcessor(self.config)
-            errors = whisper_processor.check_dependencies()
+            transcription_processor = TranscriptionProcessor(self.config)
+            errors = transcription_processor.check_dependencies()
             if errors:
                 for error in errors:
                     console.print(f"[red]❌ Whisper: {error}")
@@ -373,7 +373,7 @@ class AudioPipeline:
             "bootstrap": "stage0_bootstrap",
             "preprocess": "stage1_preprocess",
             "vad": "stage2_vad",
-            "whisper": "stage3_whisper",
+            "transcribe": "stage3_whisper",
             "process": "stage4_process",
         }
 
@@ -582,7 +582,7 @@ def cli(ctx, verbose: bool, config_file: Path | None):
 @cli.command()
 @click.option(
     "--stage",
-    help="Comma-separated list of stages to run (bootstrap,preprocess,vad,whisper,process)",
+    help="Comma-separated list of stages to run (bootstrap,preprocess,vad,transcribe,process)",
 )
 @click.option(
     "--continue",
@@ -590,10 +590,65 @@ def cli(ctx, verbose: bool, config_file: Path | None):
     is_flag=True,
     help="Continue to next stages after specified stages complete",
 )
+@click.option(
+    "--model",
+    type=str,
+    help='Transcription model: "whisper" (default) or "parakeet"',
+)
+@click.option(
+    "--streaming",
+    is_flag=True,
+    help="Enable streaming mode (only applies to Parakeet model)",
+)
 @click.pass_context
-def run(ctx, stage: str | None, continue_after: bool):
+def run(
+    ctx, stage: str | None, continue_after: bool, model: str | None, streaming: bool
+):
     """Run the complete audio processing pipeline or specific stages."""
     config = ctx.obj["config"]
+
+    # Apply model configuration overrides if specified
+    if model is not None or streaming:
+        # Model name mapping
+        model_mapping = {
+            "whisper": "small.en",
+            "parakeet": "mlx-community/parakeet-tdt-0.6b-v3",
+        }
+
+        # Determine the actual model name
+        if model is not None:
+            if model in model_mapping:
+                actual_model = model_mapping[model]
+            else:
+                # Allow passing full model names too
+                actual_model = model
+        else:
+            actual_model = config.model.model
+
+        # Apply streaming only if model is parakeet
+        use_streaming = False
+        if streaming:
+            if "parakeet" in actual_model.lower():
+                use_streaming = True
+            else:
+                console.print(
+                    "[yellow]⚠️  --streaming flag only applies to Parakeet model, ignoring"
+                )
+
+        # Update the config with new model settings
+        from .config import ModelConfig
+
+        config.model = ModelConfig(
+            model=actual_model,
+            language=config.model.language,
+            temperature=config.model.temperature,
+            use_streaming=use_streaming,
+            context_frames=config.model.context_frames,
+            split_sentences=config.model.split_sentences,
+            min_sentence_ms=config.model.min_sentence_ms,
+            merge_sentence_gap_ms=config.model.merge_sentence_gap_ms,
+        )
+
     pipeline = AudioPipeline(config)
 
     try:

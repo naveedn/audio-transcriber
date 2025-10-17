@@ -1,4 +1,4 @@
-"""Stage 3: Speech-to-Text Transcription with Whisper."""
+"""Stage 3: Speech-to-Text Transcription with Multiple Models."""
 
 import json
 import logging
@@ -6,8 +6,6 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-import librosa
-import numpy as np
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -18,164 +16,32 @@ from rich.progress import (
 )
 
 from .config import Config
+from .transcription.strategy import create_transcription_strategy
 
 console = Console()
 logger = logging.getLogger(__name__)
 
 
-class WhisperTranscriber:
-    """Whisper-based speech-to-text transcription."""
+class Transcriber:
+    """Speech-to-text transcription using Strategy Pattern.
+
+    This class delegates to different transcription strategies based on config:
+    - WhisperStrategy: For Whisper models (MLX or standard)
+    - ParakeetStrategy: For Parakeet models (streaming and non-streaming modes)
+    """
 
     def __init__(self, config: Config) -> None:
-        """Initialize the Whisper transcriber."""
+        """Initialize the transcriber with appropriate strategy."""
         self.config = config
-        self.whisper_config = config.whisper
-        self.model = None
-        self.use_mlx = False
-        self.mlx_module = None
+        self.model_config = config.model
+
+        # Create the appropriate strategy based on config
+        self.strategy = create_transcription_strategy(config)
+        logger.info(f"Initialized transcriber with {self.strategy.__class__.__name__}")
 
     def load_model(self) -> None:
-        """Initialize Whisper implementation (MLX Whisper doesn't require model loading)."""
-        try:
-            import mlx_whisper
-
-            self.mlx_module = mlx_whisper
-            self.use_mlx = True
-            logger.info("MLX Whisper available for Apple Silicon optimization")
-
-        except ImportError:
-            logger.warning(
-                "⚠️ MLX Whisper not available, falling back to standard Whisper"
-            )
-            try:
-                import whisper
-
-                self.model = whisper.load_model(self.whisper_config.model)
-                self.use_mlx = False
-                logger.info("Standard Whisper model loaded successfully")
-            except ImportError:
-                msg = "Neither MLX Whisper nor standard Whisper is available"
-                raise ImportError(msg)
-        except Exception as e:
-            logger.exception(f"Failed to initialize Whisper: {e}")
-            raise
-
-    def _load_vad_segments(self, vad_path: Path) -> list[dict]:
-        """Load VAD segments from JSON file."""
-        try:
-            with open(vad_path) as f:
-                data = json.load(f)
-                return data.get("segments", [])
-        except Exception as e:
-            logger.exception(f"Error loading VAD segments from {vad_path}: {e}")
-            return []
-
-    def _extract_audio_segment(
-        self,
-        audio: np.ndarray,
-        sample_rate: int,
-        start_time: float,
-        end_time: float,
-    ) -> np.ndarray:
-        """Extract audio segment from full audio array."""
-        start_sample = int(start_time * sample_rate)
-        end_sample = int(end_time * sample_rate)
-
-        # Ensure bounds are valid
-        start_sample = max(0, start_sample)
-        end_sample = min(len(audio), end_sample)
-
-        return audio[start_sample:end_sample]
-
-    def _transcribe_segment(
-        self,
-        audio_segment: np.ndarray,
-        sample_rate: int = 16000,
-    ) -> dict:
-        """Transcribe a single audio segment."""
-        try:
-            # Ensure model is initialized
-            if (self.use_mlx and self.mlx_module is None) or (
-                not self.use_mlx and self.model is None
-            ):
-                self.load_model()
-
-            # Apply MLX memory optimization if available
-            if self.use_mlx:
-                try:
-                    import mlx.core as mx
-
-                    mx.clear_cache()
-                except ImportError:
-                    pass  # MLX core not available, continue without memory management
-
-            if self.use_mlx:
-                # MLX Whisper - uses direct function call with model repository
-                result = self.mlx_module.transcribe(
-                    audio_segment,
-                    path_or_hf_repo="mlx-community/whisper-small.en-mlx",
-                    word_timestamps=True,
-                    temperature=0,
-                    condition_on_previous_text=False,
-                )
-            else:
-                # Standard Whisper
-                result = self.model.transcribe(
-                    audio_segment,
-                    language=self.whisper_config.language,
-                    temperature=self.whisper_config.temperature,
-                    word_timestamps=True,
-                )
-
-            return result
-
-        except Exception as e:
-            logger.exception(f"Error transcribing audio segment: {e}")
-            return {"text": "", "segments": [], "words": []}
-
-    def _merge_sentence_segments(self, segments: list[dict]) -> list[dict]:
-        """Merge adjacent segments to create sentence-level segments."""
-        if not segments:
-            return segments
-
-        merged = []
-        current_segment = segments[0].copy()
-
-        for next_segment in segments[1:]:
-            # Calculate gap between segments
-            gap_ms = (next_segment["start"] - current_segment["end"]) * 1000
-
-            # Check if both segments are short enough to merge
-            current_duration = (
-                current_segment["end"] - current_segment["start"]
-            ) * 1000
-            next_duration = (next_segment["end"] - next_segment["start"]) * 1000
-
-            should_merge = (
-                gap_ms <= self.whisper_config.merge_sentence_gap_ms
-                and current_duration < self.whisper_config.min_sentence_ms
-                and next_duration < self.whisper_config.min_sentence_ms
-            )
-
-            if should_merge:
-                # Merge segments
-                current_segment["end"] = next_segment["end"]
-                current_segment["text"] = (
-                    current_segment["text"].strip() + " " + next_segment["text"].strip()
-                )
-
-                # Merge words if available
-                if "words" in current_segment and "words" in next_segment:
-                    current_segment["words"].extend(next_segment["words"])
-            else:
-                # Save current segment and start new one
-                merged.append(current_segment)
-                current_segment = next_segment.copy()
-
-        # Add the last segment
-        merged.append(current_segment)
-
-        return merged
+        """Load the transcription model via strategy."""
+        self.strategy.load_model()
 
     def _create_srt_content(self, segments: list[dict]) -> str:
         """Create SRT subtitle content from transcription segments."""
@@ -214,81 +80,11 @@ class WhisperTranscriber:
         progress: Progress | None = None,
         task_id: Optional = None,
     ) -> dict:
-        """Transcribe a single audio file using VAD segments."""
-        try:
-            logger.info(f"Transcribing {audio_path.name}")
+        """Transcribe a single audio file using VAD segments.
 
-            # Load audio
-            audio, sample_rate = librosa.load(str(audio_path), sr=16000)
-
-            # Load VAD segments
-            vad_segments = self._load_vad_segments(vad_path)
-            if not vad_segments:
-                logger.warning(f"No VAD segments found for {audio_path.name}")
-                return {"segments": [], "text": ""}
-
-            logger.info(f"Processing {len(vad_segments)} VAD segments")
-
-            # Transcribe each segment
-            transcribed_segments = []
-
-            for i, vad_segment in enumerate(vad_segments):
-                start_time = vad_segment["start"]
-                end_time = vad_segment["end"]
-
-                # Extract audio segment
-                audio_segment = self._extract_audio_segment(
-                    audio,
-                    sample_rate,
-                    start_time,
-                    end_time,
-                )
-
-                if len(audio_segment) < sample_rate * 0.1:  # Skip very short segments
-                    continue
-
-                # Transcribe segment
-                whisper_result = self._transcribe_segment(audio_segment, sample_rate)
-
-                if whisper_result.get("text", "").strip():
-                    segment_data = {
-                        "start": start_time,
-                        "end": end_time,
-                        "text": whisper_result["text"].strip(),
-                        "words": whisper_result.get("words", []),
-                        "segment_id": i,
-                    }
-                    transcribed_segments.append(segment_data)
-
-                # Update progress
-                if progress and task_id is not None:
-                    progress.update(task_id, advance=1)
-
-            # Merge sentence segments if enabled
-            if self.whisper_config.split_sentences:
-                transcribed_segments = self._merge_sentence_segments(
-                    transcribed_segments
-                )
-
-            # Combine all text
-            full_text = " ".join(segment["text"] for segment in transcribed_segments)
-
-            result = {
-                "segments": transcribed_segments,
-                "text": full_text,
-                "language": self.whisper_config.language,
-                "model": self.whisper_config.model,
-                "total_segments": len(transcribed_segments),
-            }
-
-            logger.info(
-                f"Transcribed {len(transcribed_segments)} segments for {audio_path.name}"
-            )
-            return result
-
-        except Exception as e:
-            logger.exception(f"Error transcribing {audio_path.name}: {e}")
-            return {"segments": [], "text": ""}
+        Delegates to the configured strategy (Whisper, Parakeet, or Parakeet Streaming).
+        """
+        return self.strategy.transcribe_file(audio_path, vad_path, progress, task_id)
 
     def save_transcription(
         self,
@@ -306,7 +102,7 @@ class WhisperTranscriber:
             transcription_data = {
                 "speaker": speaker_name,
                 "transcription": transcription,
-                "config": self.whisper_config.dict(),
+                "config": self.model_config.dict(),
             }
 
             with open(json_path, "w", encoding="utf-8") as f:
@@ -331,7 +127,7 @@ class TranscriptionProcessor:
     def __init__(self, config: Config) -> None:
         """Initialize the transcription processor."""
         self.config = config
-        self.transcriber = WhisperTranscriber(config)
+        self.transcriber = Transcriber(config)
 
     def find_audio_and_vad_files(self) -> list[tuple[Path, Path]]:
         """Find matching audio and VAD files for transcription."""
@@ -450,33 +246,59 @@ class TranscriptionProcessor:
         return successful_outputs
 
     def check_dependencies(self) -> list[str]:
-        """Check if required dependencies are available."""
+        """Check if required dependencies are available for the selected strategy."""
         errors = []
 
-        # Try MLX Whisper first
-        try:
-            import mlx_whisper
+        model_name = self.config.model.model.lower()
 
-            logger.info("MLX Whisper is available for Apple Silicon optimization")
-        except ImportError:
-            # Fall back to standard Whisper
+        # Check model-specific dependencies
+        if "whisper" in model_name:
+            # Check Whisper dependencies
             try:
-                import whisper
+                import mlx_whisper
 
-                logger.info("Standard Whisper is available")
+                logger.info("MLX Whisper is available for Apple Silicon optimization")
             except ImportError:
-                errors.append("Neither MLX Whisper nor standard Whisper is installed")
+                try:
+                    import whisper
+
+                    logger.info("Standard Whisper is available")
+                except ImportError:
+                    errors.append(
+                        "Neither MLX Whisper nor standard Whisper is installed"
+                    )
+
+            try:
+                import librosa
+            except ImportError:
+                errors.append("librosa is not installed")
+
+        elif "parakeet" in model_name:
+            # Check Parakeet dependencies
+            try:
+                import parakeet_mlx
+
+                logger.info("Parakeet-MLX is available")
+            except ImportError:
+                errors.append(
+                    "parakeet-mlx is not installed (required for Parakeet models)"
+                )
+
+            try:
+                import librosa
+            except ImportError:
+                errors.append("librosa is not installed")
+
+            try:
+                import soundfile
+            except ImportError:
+                errors.append("soundfile is not installed (required for Parakeet)")
 
         try:
-            import librosa
-        except ImportError:
-            errors.append("librosa is not installed")
-
-        try:
-            # Test initializing the transcriber (no longer loads models for MLX)
+            # Test initializing the transcriber strategy
             self.transcriber.load_model()
         except Exception as e:
-            errors.append(f"Cannot initialize Whisper: {e}")
+            errors.append(f"Cannot initialize transcription model: {e}")
 
         return errors
 
