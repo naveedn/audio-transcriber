@@ -241,8 +241,7 @@ class SileroVAD:
                 end_sample = frame_end_sample - state.below_cnt * context.frame_samples
                 state.segments.append(
                     {
-                        "start": max(0, state.start_sample)
-                        / context.sample_rate,
+                        "start": max(0, state.start_sample) / context.sample_rate,
                         "end": min(end_sample, context.audio_length)
                         / context.sample_rate,
                         "confidence": prob,
@@ -299,9 +298,7 @@ class SileroVAD:
         if progress and task_id is not None:
             progress.update(task_id, advance=1)
 
-        logger.info(
-            "Found %s speech segments in %s", len(segments), audio_path.name
-        )
+        logger.info("Found %s speech segments in %s", len(segments), audio_path.name)
         return segments
 
     def save_segments(self, segments: list[dict], output_path: Path) -> None:
@@ -339,9 +336,7 @@ class SileroVAD:
                 )
             csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-            logger.info(
-                "Saved VAD results to %s and %s", json_path, csv_path
-            )
+            logger.info("Saved VAD results to %s and %s", json_path, csv_path)
 
         except OSError:
             logger.exception("Error saving segments to %s", output_path)
@@ -370,9 +365,7 @@ class VADProcessor:
         for pattern in ["*.wav", "*.WAV"]:
             audio_files.extend(self.config.paths.audio_wav_dir.glob(pattern))
 
-        logger.info(
-            "Found %s audio files for VAD processing", len(audio_files)
-        )
+        logger.info("Found %s audio files for VAD processing", len(audio_files))
         return sorted(audio_files)
 
     def get_output_path(self, audio_path: Path) -> Path:

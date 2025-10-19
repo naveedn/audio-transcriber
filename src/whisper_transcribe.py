@@ -369,13 +369,9 @@ class TranscriptionProcessor:
             if vad_path.exists():
                 audio_vad_pairs.append((audio_path, vad_path))
             else:
-                logger.warning(
-                    "No VAD file found for %s: %s", speaker_name, vad_path
-                )
+                logger.warning("No VAD file found for %s: %s", speaker_name, vad_path)
 
-        logger.info(
-            "Found %s audio/VAD pairs for transcription", len(audio_vad_pairs)
-        )
+        logger.info("Found %s audio/VAD pairs for transcription", len(audio_vad_pairs))
         return sorted(audio_vad_pairs)
 
     def get_output_path(self, audio_path: Path) -> Path:
