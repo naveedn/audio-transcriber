@@ -1,0 +1,43 @@
+# 2025-10-17 05:54:04 UTC
+
+## Current Status (examples)
+- Ruff cleanup for `src/vad_timestamp.py` and `src/whisper_transcribe.py` is merged locally; see bead `audio-transcriber-5` for dependency graph.
+- Outstanding lint items remain in `src/main.py`, `tests/analyze_transcript_changes.py`, and `tests/test_truncation.py` (e.g., run `ruff check src/main.py` to reproduce).
+- VAD/whisper pipeline launch is blocked by a missing `TaskID` import in `src/whisper_transcribe.py:219`.
+
+## Open Challenges (examples)
+- Restore runtime parity after lint fixes: resolve `NameError: TaskID` without altering intended control flow.
+- Address remaining Ruff violations without triggering new behavioural changes; refer to beads `audio-transcriber-1` and `audio-transcriber-4`.
+- Ensure legacy test scripts stop failing lint once converted to pytest-style assertions.
+
+## Next Steps (examples)
+- Import or define `TaskID` in `src/whisper_transcribe.py` and rerun `uv run transcribe run --stage vad`.
+- Finish Ruff compliance for `src/main.py` and test utilities, then execute `ruff check --exit-non-zero-on-fix .` for full confirmation.
+- Once lint passes, run smoke tests: `uv run transcribe run --stage whisper` and confirm transcripts on sample audio.
+
+## Paths / Artifacts / Datasets (examples)
+- Source modules: `src/whisper_transcribe.py`, `src/vad_timestamp.py`, `src/main.py`.
+- Test utilities to revisit: `tests/analyze_transcript_changes.py`, `tests/test_truncation.py`.
+- Logs: `ruff_full.log` (update after final pass), prior VAD error trace captured in bead `audio-transcriber-5`.
+- Sample audio fixtures live under `tests/data/` (e.g., `tests/data/sample.wav`).
+
+## Recent Test Results + Logs (examples)
+- `uv run transcribe run --stage vad` → fails with `NameError: TaskID` (see stack trace above).
+- No recent `pytest` or `ruff check .` run recorded post-refactor; last verified commands were per-file lint checks only.
+
+## Schemas / Contracts & Expected Outputs (examples)
+- CLI command `transcribe run --stage {vad|whisper}` expected to produce timestamped JSON transcripts in `outputs/`.
+- Whisper transcriber methods should return `list[Segment]` objects, preserving existing dataclass fields (start/end, text, speaker, confidence).
+- VAD stage must emit `.csv` timing artifacts compatible with downstream aligner scripts (see `docs/VAD_Comparison_README.md` for columns).
+
+## Exact Environment (examples)
+- Active venv: `.venv` managed via `uv`; activate with `source .venv/bin/activate` if needed.
+- Python: `.venv/bin/python --version` → Python 3.11.13.
+- Ruff: `.venv/bin/ruff --version` → 0.13.2.
+- uv tooling: `uv --version` → 0.6.11 (Homebrew build 2025-03-30).
+
+## Package Versions & Notes to Avoid Duplicate Envs (examples)
+- Reuse the existing `.venv`; do _not_ create new virtualenvs or run `uv init`.
+- Dependencies are pinned in `uv.lock`; install via `uv sync` if packages drift.
+- If the environment becomes stale, prefer `uv sync --frozen` rather than `pip install`.
+- Ensure `PATH` prioritizes `.venv/bin` before running formatters to avoid global Ruff mismatches.
