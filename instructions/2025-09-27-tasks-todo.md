@@ -1,5 +1,8 @@
 ## Todos
 
+## Status
+This refactor project
+
 ### code clean up
 - refactor the main file to not have a numerical stage mapping, allow the order to be defined by array index ordering or explicitly by the user.
 - fix linter errors
