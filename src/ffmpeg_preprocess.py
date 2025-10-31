@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -62,7 +63,7 @@ class AudioPreprocessor:
             # Build FFmpeg command
             cmd = self._build_ffmpeg_command(input_path, output_path)
 
-            logger.info(f"Processing {input_path.name} -> {output_path.name}")
+            logger.info("Processing %s -> %s", input_path.name, output_path.name)
 
             # Run FFmpeg
             process = await asyncio.create_subprocess_exec(
@@ -74,18 +75,24 @@ class AudioPreprocessor:
             _stdout, stderr = await process.communicate()
 
             if process.returncode != 0:
-                logger.error(f"FFmpeg failed for {input_path.name}: {stderr.decode()}")
+                logger.error(
+                    "FFmpeg failed for %s: %s",
+                    input_path.name,
+                    stderr.decode(),
+                )
                 return False
-
-            if progress and task_id is not None:
-                progress.update(task_id, advance=1)
-
-            logger.info(f"Successfully processed {input_path.name}")
-            return True
-
-        except Exception as e:
-            logger.exception(f"Error processing {input_path.name}: {e}")
+        except asyncio.CancelledError:
+            logger.warning("FFmpeg processing cancelled for %s", input_path.name)
+            raise
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.exception("Error processing %s", input_path.name, exc_info=exc)
             return False
+
+        if progress and task_id is not None:
+            progress.update(task_id, advance=1)
+
+        logger.info("Successfully processed %s", input_path.name)
+        return True
 
     def _get_speaker_name(self, filename: str) -> str:
         """Extract speaker name from filename (before extension)."""
@@ -97,7 +104,8 @@ class AudioPreprocessor:
 
         if not self.config.paths.inputs_dir.exists():
             logger.warning(
-                f"Input directory does not exist: {self.config.paths.inputs_dir}"
+                "Input directory does not exist: %s",
+                self.config.paths.inputs_dir,
             )
             return input_files
 
@@ -105,7 +113,7 @@ class AudioPreprocessor:
         for pattern in ["*.flac", "*.FLAC"]:
             input_files.extend(self.config.paths.inputs_dir.glob(pattern))
 
-        logger.info(f"Found {len(input_files)} audio files to process")
+        logger.info("Found %s audio files to process", len(input_files))
         return sorted(input_files)
 
     def get_output_path(self, input_path: Path) -> Path:
@@ -159,9 +167,9 @@ class AudioPreprocessor:
         successful_outputs = []
         failed_count = 0
 
-        for _i, result in enumerate(results):
+        for _result_index, result in enumerate(results):
             if isinstance(result, Exception):
-                logger.error(f"Task failed with exception: {result}")
+                logger.error("Task failed with exception: %s", result)
                 failed_count += 1
             else:
                 output_path, success = result
@@ -180,9 +188,14 @@ class AudioPreprocessor:
         """Check if FFmpeg is available."""
         errors = []
 
+        ffmpeg_path = shutil.which("ffmpeg")
+        if not ffmpeg_path:
+            errors.append("FFmpeg executable not found on PATH")
+            return errors
+
         try:
-            result = subprocess.run(
-                ["ffmpeg", "-version"],
+            result = subprocess.run(  # noqa: S603
+                [ffmpeg_path, "-version"],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -194,8 +207,8 @@ class AudioPreprocessor:
             errors.append("FFmpeg is not installed or not in PATH")
         except subprocess.TimeoutExpired:
             errors.append("FFmpeg check timed out")
-        except Exception as e:
-            errors.append(f"Error checking FFmpeg: {e}")
+        except OSError as exc:
+            errors.append(f"Error checking FFmpeg: {exc}")
 
         return errors
 
@@ -268,6 +281,6 @@ if __name__ == "__main__":
         console.print(
             f"[green]Preprocessing complete! Generated {len(output_files)} files."
         )
-    except Exception as e:
-        console.print(f"[red]Preprocessing failed: {e}")
+    except (RuntimeError, OSError) as exc:
+        console.print(f"[red]Preprocessing failed: {exc}")
         sys.exit(1)

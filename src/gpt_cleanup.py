@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -11,16 +12,31 @@ import openai
 import tiktoken
 from rich.console import Console
 
+try:
+    import nest_asyncio
+except ImportError:
+    nest_asyncio = None
+
 from .config import Config
 
 console = Console()
 logger = logging.getLogger(__name__)
 
+MERGE_GAP_SECONDS = 3.0
+MAX_SEGMENT_DIFF = 5
+REPETITION_PATTERN = r"(.{2,}?)\1{3,}"
+
 
 class TranscriptSegment:
     """Represents a single transcript segment."""
 
-    def __init__(self, start_sec: float, end_sec: float, text: str, speaker: str):
+    def __init__(
+        self,
+        start_sec: float,
+        end_sec: float,
+        text: str,
+        speaker: str,
+    ) -> None:
         self.start_sec = start_sec
         self.end_sec = end_sec
         self.text = text.strip()
@@ -51,69 +67,69 @@ class TranscriptSegment:
 
 
 class TranscriptProcessor:
-    """Processes transcripts using the proven working approach from the reference implementation."""
+    """Process transcripts using the reference implementation flow."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config) -> None:
         """Initialize the transcript processor."""
         self.config = config
         self.gpt_config = config.gpt
         self.client = openai.OpenAI(api_key=config.openai_api_key)
 
     def load_individual_transcripts(self) -> list[TranscriptSegment]:
-        """Load transcript segments from individual speaker JSON files (like working version)."""
+        """Load transcript segments from individual speaker JSON files."""
         segments = []
 
         # Look for individual speaker transcript files
-        if not self.config.paths.whisper_dir.exists():
-            logger.warning(
-                f"Whisper directory does not exist: {self.config.paths.whisper_dir}"
-            )
+        whisper_dir = self.config.paths.whisper_dir
+        if not whisper_dir.exists():
+            logger.warning("Whisper directory does not exist: %s", whisper_dir)
             return segments
 
         # Find all transcript JSON files
-        for json_file in self.config.paths.whisper_dir.glob("*_transcript.json"):
+        for json_file in whisper_dir.glob("*_transcript.json"):
             speaker = json_file.stem.replace("_transcript", "")
 
             try:
-                with open(json_file, encoding="utf-8") as f:
-                    data = json.load(f)
-
-                # Handle both merged format and individual speaker format
-                if "transcription" in data and "segments" in data["transcription"]:
-                    # Individual speaker format (from whisper output)
-                    for segment in data["transcription"]["segments"]:
-                        segments.append(
-                            TranscriptSegment(
-                                start_sec=segment["start"],
-                                end_sec=segment["end"],
-                                text=segment["text"],
-                                speaker=speaker,
-                            )
-                        )
-
-                    logger.info(
-                        f"Loaded {len(segments)} segments from {json_file.name}"
-                    )
-                else:
-                    # Simple array format
-                    for segment in data:
-                        segments.append(
-                            TranscriptSegment(
-                                start_sec=segment["start_sec"],
-                                end_sec=segment["end_sec"],
-                                text=segment["text"],
-                                speaker=speaker,
-                            )
-                        )
-
-            except Exception as e:
-                logger.error(f"Error loading {json_file}: {e}")
+                with json_file.open(encoding="utf-8") as file_obj:
+                    data = json.load(file_obj)
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.exception("Error loading %s", json_file, exc_info=exc)
                 continue
+
+            count_before = len(segments)
+
+            # Handle both merged format and individual speaker format
+            if "transcription" in data and "segments" in data["transcription"]:
+                segments.extend(
+                    TranscriptSegment(
+                        start_sec=segment["start"],
+                        end_sec=segment["end"],
+                        text=segment["text"],
+                        speaker=speaker,
+                    )
+                    for segment in data["transcription"]["segments"]
+                )
+            else:
+                segments.extend(
+                    TranscriptSegment(
+                        start_sec=segment["start_sec"],
+                        end_sec=segment["end_sec"],
+                        text=segment["text"],
+                        speaker=speaker,
+                    )
+                    for segment in data
+                )
+
+            new_segments = len(segments) - count_before
+            logger.info("Loaded %s segments from %s", new_segments, json_file.name)
 
         # Sort chronologically (essential for proper merging)
         segments.sort(key=lambda x: x.start_sec)
+        speaker_count = len({segment.speaker for segment in segments})
         logger.info(
-            f"Total segments loaded: {len(segments)} from {len(set(s.speaker for s in segments))} speakers"
+            "Total segments loaded: %s from %s speakers",
+            len(segments),
+            speaker_count,
         )
 
         return segments
@@ -121,7 +137,7 @@ class TranscriptProcessor:
     def merge_adjacent_segments(
         self, segments: list[TranscriptSegment]
     ) -> list[TranscriptSegment]:
-        """Merge adjacent segments from the same speaker (exactly like working version)."""
+        """Merge adjacent segments from the same speaker."""
         if not segments:
             return segments
 
@@ -129,12 +145,11 @@ class TranscriptProcessor:
         current_segment = segments[0]
 
         for next_segment in segments[1:]:
-            # Check if segments are from the same speaker and within reasonable time gap (< 3 seconds)
             time_gap = next_segment.start_sec - current_segment.end_sec
             if (
-                current_segment.speaker == next_segment.speaker and time_gap < 3.0
-            ):  # 3 second threshold for merging
-                # Merge the segments
+                current_segment.speaker == next_segment.speaker
+                and time_gap < MERGE_GAP_SECONDS
+            ):
                 current_segment = TranscriptSegment(
                     start_sec=current_segment.start_sec,
                     end_sec=next_segment.end_sec,
@@ -147,49 +162,34 @@ class TranscriptProcessor:
 
         merged.append(current_segment)
         logger.info(
-            f"After merging: {len(merged)} segments (reduced from {len(segments)})"
+            "After merging: %s segments (reduced from %s)",
+            len(merged),
+            len(segments),
         )
         return merged
 
     def _truncate_repetitive_sequences(self, text: str, max_repeat: int = 50) -> str:
-        """Truncate excessively repeated character sequences to prevent GPT token overflow.
+        """Clamp repeated character sequences to avoid token overflow."""
 
-        Args:
-            text: Input text that may contain long repeated sequences
-            max_repeat: Maximum number of times to allow a pattern to repeat
-
-        Returns:
-            Text with excessive repetitions truncated and marked
-        """
-        # Pattern to detect 2+ character sequences repeated many times
-        # Example: "HAHAHAHA" or "LALALA" or "hehehehe"
-        pattern = r"(.{2,}?)\1{3,}"  # Find patterns repeated 4+ times
-
-        def replace_repetition(match):
-            """Replace long repetitions with truncated version."""
+        def replace_repetition(match: re.Match[str]) -> str:
+            """Replace long repetitions with a truncated marker."""
             full_match = match.group(0)
             pattern_unit = match.group(1)
 
-            # Count how many times the pattern repeats
             repetitions = len(full_match) // len(pattern_unit)
-
-            # If it repeats more than max_repeat times, truncate it
             if repetitions > max_repeat:
-                # Keep first max_repeat repetitions and add indicator
                 truncated = pattern_unit * max_repeat
-                # Add ellipsis and note about continuation
                 return f"{truncated}... [continues]"
             return full_match
 
-        result = re.sub(pattern, replace_repetition, text)
-        return result
+        return re.sub(REPETITION_PATTERN, replace_repetition, text)
 
     def _estimate_tokens(self, text: str) -> int:
         """Estimate token count for a text string."""
         try:
             encoding = tiktoken.encoding_for_model(self.gpt_config.model)
             return len(encoding.encode(text))
-        except Exception:
+        except (LookupError, ValueError):
             # Fallback: rough estimation (1 token ≈ 4 characters)
             return len(text) // 4
 
@@ -248,13 +248,18 @@ class TranscriptProcessor:
             texts.append(f"{j + 1}. [{seg.speaker}]: {truncated_text}")
         batch_text = "\n".join(texts)
 
+        est_tokens = self._estimate_tokens(batch_text)
         console.print(
-            f"[blue]Processing batch {batch_num}/{total_batches} ({len(batch)} segments, ~{self._estimate_tokens(batch_text)} tokens)..."
+            "[blue]"
+            f"Processing batch {batch_num}/{total_batches} "
+            f"({len(batch)} segments, ~{est_tokens} tokens)..."
         )
 
+        processed_batch: list[TranscriptSegment] = batch
         try:
             prompt_file = self.config.paths.prompts_dir / "spell-corrections.txt"
-            system_prompt = open(prompt_file).read()
+            with prompt_file.open(encoding="utf-8") as file_obj:
+                system_prompt = file_obj.read()
 
             # Use async OpenAI client
             response = await asyncio.to_thread(
@@ -280,14 +285,14 @@ class TranscriptProcessor:
             # Filter out empty lines that GPT might add
             corrected_lines = [line for line in corrected_lines if line.strip()]
 
-            corrected_batch = []
+            candidate_batch: list[TranscriptSegment] = []
             # Parse the corrected responses back to segments
             for j, line in enumerate(corrected_lines):
                 if j < len(batch):
                     # Extract the corrected text (remove numbering and speaker prefix)
                     match = re.match(r"^\d+\.\s*\[([^\]]+)\]:\s*(.+)$", line.strip())
                     if match:
-                        corrected_batch.append(
+                        candidate_batch.append(
                             TranscriptSegment(
                                 start_sec=batch[j].start_sec,
                                 end_sec=batch[j].end_sec,
@@ -298,20 +303,22 @@ class TranscriptProcessor:
                     else:
                         # Fallback to original if parsing fails
                         logger.warning(
-                            f"Batch {batch_num}: Failed to parse line {j + 1}, using original segment"
+                            "Batch %s: Failed to parse line %s, using original segment",
+                            batch_num,
+                            j + 1,
                         )
-                        corrected_batch.append(batch[j])
+                        candidate_batch.append(batch[j])
 
             # CRITICAL: Validate we didn't lose too many segments
             # Accept batches within 5 segments of original
-            segment_diff = abs(len(corrected_batch) - len(batch))
-            if segment_diff > 5:
+            segment_diff = abs(len(candidate_batch) - len(batch))
+            if segment_diff > MAX_SEGMENT_DIFF:
                 # Create error output directory
                 error_dir = self.config.paths.gpt_dir / "errors"
                 error_dir.mkdir(parents=True, exist_ok=True)
 
                 # Generate timestamp-based filename
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                timestamp = datetime.now(tz=datetime.UTC).strftime("%Y%m%d_%H%M%S")
                 batch_text_file = (
                     error_dir / f"batch_{batch_num}_{timestamp}_original.txt"
                 )
@@ -320,46 +327,69 @@ class TranscriptProcessor:
                 )
 
                 # Save original batch text
-                with open(batch_text_file, "w", encoding="utf-8") as f:
-                    f.write(batch_text)
+                batch_text_file.write_text(batch_text, encoding="utf-8")
 
                 # Save corrected lines output
-                with open(corrected_text_file, "w", encoding="utf-8") as f:
-                    f.write("\n".join(corrected_lines))
+                corrected_text_file.write_text(
+                    "\n".join(corrected_lines),
+                    encoding="utf-8",
+                )
 
                 logger.error(
-                    f"Batch {batch_num}: Segment count mismatch! "
-                    f"Original: {len(batch)}, Corrected: {len(corrected_batch)}, "
-                    f"GPT lines: {len(corrected_lines)}. Difference of {segment_diff} exceeds threshold of 5. "
-                    f"Using original batch. "
-                    f"Original saved to: {batch_text_file}, Corrected saved to: {corrected_text_file}",
+                    (
+                        "Batch %s: Segment count mismatch! Original=%s, "
+                        "Corrected=%s, GPT lines=%s. Difference=%s exceeds "
+                        "threshold=%s. Original saved to: %s, Corrected saved to: %s"
+                    ),
+                    batch_num,
+                    len(batch),
+                    len(candidate_batch),
+                    len(corrected_lines),
+                    segment_diff,
+                    MAX_SEGMENT_DIFF,
+                    batch_text_file,
+                    corrected_text_file,
                 )
 
                 console.print(
-                    f"[red]⚠ Batch {batch_num}: Segment difference of {segment_diff} exceeds threshold, "
-                    f"using original batch. Error files saved to {error_dir}",
+                    "[red]⚠ Batch "
+                    f"{batch_num}: Segment difference of {segment_diff} exceeds "
+                    "threshold, using original batch. "
+                    f"Error files saved to {error_dir}",
                 )
-                return batch
-            if segment_diff > 0:
+                processed_batch = batch
+            else:
+                processed_batch = candidate_batch
+
+            if 0 < segment_diff <= MAX_SEGMENT_DIFF:
                 logger.warning(
-                    f"Batch {batch_num}: Segment count differs by {segment_diff} "
-                    f"(Original: {len(batch)}, Corrected: {len(corrected_batch)}), "
-                    f"but within acceptable threshold of 5. Accepting corrected batch.",
+                    (
+                        "Batch %s: Segment count differs by %s (Original=%s, "
+                        "Corrected=%s) but within threshold=%s. "
+                        "Accepting corrected batch."
+                    ),
+                    batch_num,
+                    segment_diff,
+                    len(batch),
+                    len(candidate_batch),
+                    MAX_SEGMENT_DIFF,
                 )
                 console.print(
-                    f"[yellow]⚠ Batch {batch_num}: Segment count differs by {segment_diff}, "
-                    f"but within threshold - accepting corrected batch",
+                    "[yellow]⚠ Batch "
+                    f"{batch_num}: Segment count differs by {segment_diff}, "
+                    "within threshold - accepting corrected batch",
                 )
-
-            console.print(f"[green]✓ Completed batch {batch_num}/{total_batches}")
-            return corrected_batch
-
-        except Exception as e:
-            logger.error(f"Error processing batch {batch_num}: {e}")
+        except (OSError, ValueError, openai.OpenAIError) as exc:
+            logger.exception("Error processing batch %s", batch_num, exc_info=exc)
             console.print(
                 f"[yellow]⚠ Batch {batch_num} failed, using original segments"
             )
-            return batch
+            processed_batch = batch
+
+        if processed_batch is not batch:
+            console.print(f"[green]✓ Completed batch {batch_num}/{total_batches}")
+
+        return processed_batch
 
     async def _process_batches_parallel(
         self,
@@ -398,7 +428,7 @@ class TranscriptProcessor:
     def fix_spelling_with_gpt(
         self, segments: list[TranscriptSegment]
     ) -> list[TranscriptSegment]:
-        """Fix spelling inconsistencies using GPT-4o-mini with optimized batching and parallel processing."""
+        """Fix spelling inconsistencies using GPT-4o-mini with batching."""
         if not self.client:
             logger.warning(
                 "OpenAI client not initialized. Skipping spelling correction."
@@ -420,36 +450,41 @@ class TranscriptProcessor:
         )
 
         console.print(
-            f"[blue]Created {total_batches} optimized batches (avg {avg_segments_per_batch:.1f} segments/batch)"
+            "[blue]Created "
+            f"{total_batches} optimized batches "
+            f"(avg {avg_segments_per_batch:.1f} segments/batch)"
         )
         console.print("[blue]Processing with up to 10 concurrent requests...")
 
         # Run async processing
         try:
-            # Check if there's already a running event loop
             try:
-                loop = asyncio.get_running_loop()
-                # If we're already in an event loop, create a task and run it
-                import nest_asyncio
+                asyncio.get_running_loop()
+            except RuntimeError:
+                corrected_segments = asyncio.run(
+                    self._process_batches_parallel(batches, max_concurrent=10)
+                )
+            else:
+                if nest_asyncio is None:
+                    logger.error(
+                        "nest_asyncio is required to run within an existing event loop"
+                    )
+                    return segments
 
                 nest_asyncio.apply()
                 corrected_segments = asyncio.run(
                     self._process_batches_parallel(batches, max_concurrent=10)
                 )
-            except RuntimeError:
-                # No running loop, safe to use asyncio.run()
-                corrected_segments = asyncio.run(
-                    self._process_batches_parallel(batches, max_concurrent=10)
-                )
-
-            logger.info(
-                f"Spelling correction completed: {len(corrected_segments)} segments processed"
-            )
-            return corrected_segments
-        except Exception as e:
-            logger.error(f"Error in parallel processing: {e}")
-            console.print(f"[red]Parallel processing failed: {e}")
+        except (RuntimeError, OSError, ValueError, openai.OpenAIError) as exc:
+            logger.exception("Error in parallel processing", exc_info=exc)
+            console.print(f"[red]Parallel processing failed: {exc}")
             return segments
+
+        logger.info(
+            "Spelling correction completed: %s segments processed",
+            len(corrected_segments),
+        )
+        return corrected_segments
 
     def save_final_outputs(
         self, segments: list[TranscriptSegment], output_path: Path
@@ -463,23 +498,27 @@ class TranscriptProcessor:
             json_path = output_path.with_suffix(".json")
             json_data = [segment.to_dict() for segment in segments]
 
-            with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(json_data, f, indent=2, ensure_ascii=False)
+            json_path.write_text(
+                json.dumps(json_data, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
 
             # Save SRT format
             srt_path = output_path.with_suffix(".srt")
-            with open(srt_path, "w", encoding="utf-8") as f:
-                for i, segment in enumerate(segments, 1):
-                    f.write(segment.to_srt_entry(i))
-                    if i < len(
-                        segments
-                    ):  # Add empty line between entries except for last
-                        f.write("\n")
+            with srt_path.open("w", encoding="utf-8") as file_obj:
+                for index, segment in enumerate(segments, 1):
+                    file_obj.write(segment.to_srt_entry(index))
+                    if index < len(segments):
+                        file_obj.write("\n")
 
-            logger.info(f"Saved final transcript to {json_path} and {srt_path}")
+            logger.info(
+                "Saved final transcript to %s and %s",
+                json_path,
+                srt_path,
+            )
 
-        except Exception as e:
-            logger.exception(f"Error saving final transcript: {e}")
+        except OSError as exc:
+            logger.exception("Error saving final transcript", exc_info=exc)
 
     def process_transcripts(self) -> Path | None:
         """Main processing pipeline using the proven working approach."""
@@ -491,8 +530,9 @@ class TranscriptProcessor:
             logger.error("No transcript segments found to process")
             return None
 
+        speakers = {segment.speaker for segment in segments}
         console.print(
-            f"[blue]Loaded {len(segments)} segments from {len(set(s.speaker for s in segments))} speakers"
+            f"[blue]Loaded {len(segments)} segments from {len(speakers)} speakers"
         )
 
         # Step 1: Merge adjacent segments from same speakers
@@ -511,7 +551,7 @@ class TranscriptProcessor:
         self.save_final_outputs(segments, output_path)
 
         # Print summary
-        speakers = set(s.speaker for s in segments)
+        speakers = {segment.speaker for segment in segments}
         console.print("[green]Processing Summary:")
         console.print(f"  Total segments: {len(segments)}")
         console.print(f"  Speakers: {', '.join(sorted(speakers))}")
@@ -531,14 +571,15 @@ class TranscriptProcessor:
         try:
             # Test OpenAI API connection
             self.client.models.list()
-        except Exception as e:
-            errors.append(f"Cannot connect to OpenAI API: {e}")
+        except openai.OpenAIError as exc:
+            errors.append(f"Cannot connect to OpenAI API: {exc}")
 
         return errors
 
 
 def cleanup_transcript(config: Config, input_path: Path | None = None) -> Path | None:
     """Main function to process transcripts using the proven working approach."""
+    del input_path
     processor = TranscriptProcessor(config)
 
     # Check dependencies
@@ -546,7 +587,8 @@ def cleanup_transcript(config: Config, input_path: Path | None = None) -> Path |
     if errors:
         for error in errors:
             logger.error(error)
-        raise RuntimeError("Transcript processing dependency check failed")
+        message = "Transcript processing dependency check failed"
+        raise RuntimeError(message)
 
     # Process transcripts
     return processor.process_transcripts()
@@ -588,6 +630,6 @@ if __name__ == "__main__":
             console.print(f"[green]Processing complete! Output: {output_file}")
         else:
             console.print("[red]Processing failed")
-    except Exception as e:
-        console.print(f"[red]Processing failed: {e}")
-        exit(1)
+    except (RuntimeError, OSError, openai.OpenAIError) as exc:
+        console.print(f"[red]Processing failed: {exc}")
+        sys.exit(1)
