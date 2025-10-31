@@ -21,3 +21,4 @@ Existing history favors short, present-tense summaries (`Adds issues to bead iss
 
 ## Security & Configuration Tips
 Never commit `.env`, raw transcripts, or large audio assets. Validate keys locally with `uv run transcribe validate` before sharing logs. Rotate credentials if they appear in error output, and reference sensitive prompts by filename instead of pasting content.
+BEFORE ANYTHING ELSE: run 'bd onboard' and follow the instructions

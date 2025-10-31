@@ -13,6 +13,7 @@ from rich.progress import (
     BarColumn,
     Progress,
     SpinnerColumn,
+    TaskID,
     TaskProgressColumn,
     TextColumn,
 )
@@ -215,7 +216,7 @@ class WhisperTranscriber:
         audio_path: Path,
         vad_path: Path,
         progress: Progress | None = None,
-        task_id: int | None = None,
+        task_id: TaskID | None = None,
     ) -> dict:
         """Transcribe a single audio file using VAD segments."""
         try:

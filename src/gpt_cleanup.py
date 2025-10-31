@@ -337,11 +337,9 @@ class TranscriptProcessor:
 
                 logger.error(
                     (
-                        "Batch %s: Segment count mismatch! "
-                        "Original: %s, Corrected: %s, "
-                        "GPT lines: %s. Difference of %s exceeds threshold of %s. "
-                        "Using original batch. Original saved to: %s, "
-                        "Corrected saved to: %s"
+                        "Batch %s: Segment count mismatch! Original=%s, "
+                        "Corrected=%s, GPT lines=%s. Difference=%s exceeds "
+                        "threshold=%s. Original saved to: %s, Corrected saved to: %s"
                     ),
                     batch_num,
                     len(batch),
@@ -355,8 +353,8 @@ class TranscriptProcessor:
 
                 console.print(
                     "[red]⚠ Batch "
-                    f"{batch_num}: Segment difference of {segment_diff} "
-                    "exceeds threshold, using original batch. "
+                    f"{batch_num}: Segment difference of {segment_diff} exceeds "
+                    "threshold, using original batch. "
                     f"Error files saved to {error_dir}",
                 )
                 processed_batch = batch
@@ -366,9 +364,8 @@ class TranscriptProcessor:
             if 0 < segment_diff <= MAX_SEGMENT_DIFF:
                 logger.warning(
                     (
-                        "Batch %s: Segment count differs by %s "
-                        "(Original: %s, Corrected: %s), "
-                        "but within acceptable threshold of %s. "
+                        "Batch %s: Segment count differs by %s (Original=%s, "
+                        "Corrected=%s) but within threshold=%s. "
                         "Accepting corrected batch."
                     ),
                     batch_num,
@@ -380,7 +377,7 @@ class TranscriptProcessor:
                 console.print(
                     "[yellow]⚠ Batch "
                     f"{batch_num}: Segment count differs by {segment_diff}, "
-                    "but within threshold - accepting corrected batch",
+                    "within threshold - accepting corrected batch",
                 )
         except (OSError, ValueError, openai.OpenAIError) as exc:
             logger.exception("Error processing batch %s", batch_num, exc_info=exc)
