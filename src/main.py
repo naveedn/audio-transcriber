@@ -5,6 +5,8 @@ import json
 import logging
 import shutil
 import sys
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -28,6 +30,18 @@ from .whisper_transcribe import TranscriptionProcessor, transcribe_audio
 
 console = Console()
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class StageSelection:
+    """Represents which stages should run and how to continue afterward."""
+
+    start_stage: str
+    target_stages: list[str] | None
+    continue_after: bool
+
+
+StageCallable = Callable[[], bool] | Callable[[], Awaitable[bool]]
 
 
 class PipelineStatus:
@@ -235,57 +249,81 @@ class AudioPipeline:
             console.print(f"[red]❌ Bootstrap failed: {exc}")
             return False
 
-    def _bootstrap_impl(self) -> bool:  # noqa: C901
+    def _bootstrap_impl(self) -> bool:
         """Execute bootstrap checks and return success state."""
-        # Create directories
+        self._create_output_directories()
+        if not self._validate_environment():
+            return False
+        if not self._check_required_processors():
+            return False
+        return self._check_optional_gpt_processor()
+
+    def _create_output_directories(self) -> None:
+        """Create output directories required by the pipeline."""
         self.config.create_directories()
         console.print("[green]✅ Created output directories")
 
-        # Validate environment
+    def _validate_environment(self) -> bool:
+        """Validate environment prerequisites and report any issues."""
         errors = self.config.validate_environment()
         if errors:
             for error in errors:
                 console.print(f"[red]❌ {error}")
             return False
         console.print("[green]✅ Environment validation passed")
+        return True
 
-        ffmpeg_processor = AudioPreprocessor(self.config)
-        errors = ffmpeg_processor.check_dependencies()
-        if errors:
-            for error in errors:
-                console.print(f"[red]❌ FFmpeg: {error}")
-            return False
-        console.print("[green]✅ FFmpeg available")
+    def _check_required_processors(self) -> bool:
+        """Ensure mandatory processors and dependencies are ready."""
+        checks = [
+            (AudioPreprocessor, "FFmpeg", "[green]✅ FFmpeg available"),
+            (VADProcessor, "Silero VAD", "[green]✅ Silero VAD model loaded"),
+            (TranscriptionProcessor, "Whisper", "[green]✅ Whisper model loaded"),
+        ]
 
-        vad_processor = VADProcessor(self.config)
-        errors = vad_processor.check_dependencies()
-        if errors:
-            for error in errors:
-                console.print(f"[red]❌ Silero VAD: {error}")
-            return False
-        console.print("[green]✅ Silero VAD model loaded")
-
-        whisper_processor = TranscriptionProcessor(self.config)
-        errors = whisper_processor.check_dependencies()
-        if errors:
-            for error in errors:
-                console.print(f"[red]❌ Whisper: {error}")
-            return False
-        console.print("[green]✅ Whisper model loaded")
-
-        if self.config.openai_api_key:
-            processor = TranscriptProcessor(self.config)
-            errors = processor.check_dependencies()
-            if errors:
-                for error in errors:
-                    console.print(f"[red]❌ OpenAI API: {error}")
+        for processor_cls, name, success_message in checks:
+            if not self._check_processor_dependencies(
+                processor_cls,
+                name,
+                success_message,
+            ):
                 return False
-            console.print("[green]✅ OpenAI API accessible")
-        else:
+
+        return True
+
+    def _check_optional_gpt_processor(self) -> bool:
+        """Validate GPT cleanup processor when an API key is configured."""
+        if not self.config.openai_api_key:
             console.print(
                 "[yellow]⚠️ OpenAI API key not provided - GPT stages will be skipped"
             )
+            return True
 
+        processor = TranscriptProcessor(self.config)
+        errors = processor.check_dependencies()
+        if errors:
+            for error in errors:
+                console.print(f"[red]❌ OpenAI API: {error}")
+            return False
+
+        console.print("[green]✅ OpenAI API accessible")
+        return True
+
+    def _check_processor_dependencies(
+        self,
+        processor_cls: type,
+        display_name: str,
+        success_message: str,
+    ) -> bool:
+        """Instantiate a processor and report on its dependency checks."""
+        processor = processor_cls(self.config)
+        errors = processor.check_dependencies()
+        if errors:
+            for error in errors:
+                console.print(f"[red]❌ {display_name}: {error}")
+            return False
+
+        console.print(success_message)
         return True
 
     async def run_stage1(self) -> bool:
@@ -366,7 +404,7 @@ class AudioPipeline:
         console.print("[yellow]No processing performed")
         return True
 
-    async def run_full_pipeline(  # noqa: C901, PLR0912, PLR0915
+    async def run_full_pipeline(
         self,
         stages: str | None = None,
         *,
@@ -377,8 +415,63 @@ class AudioPipeline:
             Panel(f"🚀 Audio Processing Pipeline v{__version__}", style="bold magenta")
         )
 
-        # Stage name mapping
-        stage_mapping = {
+        stage_mapping = self._stage_mapping()
+        selection, outcome = self._resolve_stage_selection(
+            stages,
+            continue_after=continue_after,
+            stage_mapping=stage_mapping,
+        )
+
+        if outcome == "invalid":
+            return False
+        if outcome == "complete":
+            return True
+
+        if selection is None:
+            message = "Stage selection could not be resolved."
+            raise RuntimeError(message)
+
+        self._record_pipeline_start()
+
+        stage_functions = self._stage_functions()
+        stage_order = self._stage_order()
+
+        stages_to_run = self._determine_stages_to_run(
+            selection.start_stage,
+            stage_order,
+            selection.target_stages,
+            continue_after=selection.continue_after,
+        )
+
+        if selection.target_stages:
+            self._reset_target_stages(
+                selection.target_stages,
+                continue_after=selection.continue_after,
+                stage_order=stage_order,
+            )
+
+        for stage_name in stages_to_run:
+            if self._should_skip_stage(stage_name, selection.target_stages):
+                console.print(f"[green]✅ Skipping {stage_name} (already completed)")
+                continue
+
+            if not await self._run_stage(stage_name, stage_functions[stage_name]):
+                return False
+
+            if self._should_stop_after_stage(
+                stage_name,
+                selection.target_stages,
+                continue_after=selection.continue_after,
+                stages_to_run=stages_to_run,
+            ):
+                console.print("[green]✅ Specified stages completed")
+                return True
+
+        console.print(Panel("🎉 Pipeline completed successfully!", style="bold green"))
+        return True
+
+    def _stage_mapping(self) -> dict[str, str]:
+        return {
             "bootstrap": "stage0_bootstrap",
             "preprocess": "stage1_preprocess",
             "vad": "stage2_vad",
@@ -386,48 +479,59 @@ class AudioPipeline:
             "process": "stage4_process",
         }
 
-        # Parse stages parameter
+    def _resolve_stage_selection(
+        self,
+        stages: str | None,
+        *,
+        continue_after: bool,
+        stage_mapping: dict[str, str],
+    ) -> tuple[StageSelection | None, str]:
         if stages:
-            # Parse comma-separated stage list
-            stage_names = [name.strip() for name in stages.split(",")]
+            stage_names = [name.strip() for name in stages.split(",") if name.strip()]
+            if not stage_names:
+                console.print("[red]❌ No valid stage names provided")
+                console.print(f"[cyan]Valid stages: {', '.join(stage_mapping.keys())}")
+                return None, "invalid"
 
-            # Validate stage names
             invalid_stages = [name for name in stage_names if name not in stage_mapping]
             if invalid_stages:
                 console.print(
                     f"[red]❌ Invalid stage names: {', '.join(invalid_stages)}"
                 )
                 console.print(f"[cyan]Valid stages: {', '.join(stage_mapping.keys())}")
-                return False
+                return None, "invalid"
 
-            # Convert to internal stage names
             target_stages = [stage_mapping[name] for name in stage_names]
-            start_stage = target_stages[0]
-
             console.print(f"[cyan]Running stages: {', '.join(stage_names)}")
             if continue_after:
                 console.print(
                     "[cyan]Will continue to remaining stages after completion"
                 )
-        else:
-            # No specific stages - resume from where we left off or start from beginning
-            start_stage = self.status.get_resume_stage()
-            target_stages = None
-            continue_after = True  # Default behavior for full pipeline
+            return StageSelection(
+                start_stage=target_stages[0],
+                target_stages=target_stages,
+                continue_after=continue_after,
+            ), "ok"
 
-            if not start_stage:
-                console.print("[green]✅ Pipeline already completed!")
-                return True
+        start_stage = self.status.get_resume_stage()
+        if not start_stage:
+            console.print("[green]✅ Pipeline already completed!")
+            return None, "complete"
 
-            console.print(f"[cyan]Starting from: {start_stage}")
+        console.print(f"[cyan]Starting from: {start_stage}")
+        return StageSelection(
+            start_stage=start_stage,
+            target_stages=None,
+            continue_after=True,
+        ), "ok"
 
-        # Record pipeline start
+    def _record_pipeline_start(self) -> None:
         if not self.status.status["pipeline_start"]:
             self.status.status["pipeline_start"] = datetime.now(tz=UTC).isoformat()
             self.status.save_status()
 
-        # Stage execution mapping
-        stage_functions = {
+    def _stage_functions(self) -> dict[str, StageCallable]:
+        return {
             "stage0_bootstrap": self.bootstrap,
             "stage1_preprocess": self.run_stage1,
             "stage2_vad": self.run_stage2,
@@ -435,8 +539,8 @@ class AudioPipeline:
             "stage4_process": self.run_stage4,
         }
 
-        # Get ordered list of stages to run
-        stage_order = [
+    def _stage_order(self) -> list[str]:
+        return [
             "stage0_bootstrap",
             "stage1_preprocess",
             "stage2_vad",
@@ -444,106 +548,101 @@ class AudioPipeline:
             "stage4_process",
         ]
 
-        start_index = stage_order.index(start_stage)
-
-        # Determine which stages to run
+    def _determine_stages_to_run(
+        self,
+        start_stage: str,
+        stage_order: list[str],
+        target_stages: list[str] | None,
+        *,
+        continue_after: bool,
+    ) -> list[str]:
         if target_stages and not continue_after:
-            # Run only the specified stages
-            stages_to_run = target_stages
-        else:
-            # Run from start_stage to end. If `continue_after` is set, keep running
-            # through the remaining stages once the targets are completed.
-            start_index = stage_order.index(start_stage)
-            stages_to_run = stage_order[start_index:]
+            return target_stages
 
-            if target_stages and continue_after:
-                # Find the last target stage and include all stages up to end
-                last_target_index = max(
-                    stage_order.index(stage) for stage in target_stages
-                )
-                stages_to_run = stage_order[start_index:]
+        start_index = stage_order.index(start_stage)
+        return stage_order[start_index:]
 
-        # Reset manually specified stages to pending (force re-run)
-        if target_stages:
-            for stage_name in target_stages:
+    def _reset_target_stages(
+        self,
+        target_stages: list[str],
+        *,
+        continue_after: bool,
+        stage_order: list[str],
+    ) -> None:
+        status_changed = False
+
+        for stage_name in target_stages:
+            if self.status.is_stage_completed(stage_name):
+                console.print(f"[yellow]🔄 Resetting {stage_name} (manually specified)")
+                self._set_stage_pending(stage_name)
+                status_changed = True
+
+        if continue_after:
+            last_target_index = max(stage_order.index(stage) for stage in target_stages)
+            for stage_name in stage_order[last_target_index + 1 :]:
                 if self.status.is_stage_completed(stage_name):
                     console.print(
-                        f"[yellow]🔄 Resetting {stage_name} (manually specified)"
+                        f"[yellow]🔄 Resetting {stage_name} (subsequent stage)"
                     )
-                    self.status.status["stages"][stage_name]["status"] = "pending"
-                    self.status.status["stages"][stage_name]["start_time"] = None
-                    self.status.status["stages"][stage_name]["end_time"] = None
+                    self._set_stage_pending(stage_name)
+                    status_changed = True
 
-            # When continue_after is True, also reset all subsequent stages
-            if continue_after:
-                # Find the last target stage index
-                target_indices = [stage_order.index(stage) for stage in target_stages]
-                last_target_index = max(target_indices)
-
-                # Reset all stages that come after the last target stage
-                for i in range(last_target_index + 1, len(stage_order)):
-                    subsequent_stage = stage_order[i]
-                    if self.status.is_stage_completed(subsequent_stage):
-                        console.print(
-                            "[yellow]🔄 Resetting "
-                            f"{subsequent_stage} (subsequent stage)"
-                        )
-                        self.status.status["stages"][subsequent_stage]["status"] = (
-                            "pending"
-                        )
-                        self.status.status["stages"][subsequent_stage]["start_time"] = (
-                            None
-                        )
-                        self.status.status["stages"][subsequent_stage]["end_time"] = (
-                            None
-                        )
-
+        if status_changed:
             self.status.save_status()
 
-        # Run stages
-        for stage_name in stages_to_run:
-            # Only skip completed stages if they weren't manually specified
-            if self.status.is_stage_completed(stage_name) and (
-                not target_stages or stage_name not in target_stages
-            ):
-                console.print(f"[green]✅ Skipping {stage_name} (already completed)")
-                continue
+    def _set_stage_pending(self, stage_name: str) -> None:
+        stage_status = self.status.status["stages"][stage_name]
+        stage_status["status"] = "pending"
+        stage_status["start_time"] = None
+        stage_status["end_time"] = None
 
-            self.status.start_stage(stage_name)
+    def _should_skip_stage(
+        self,
+        stage_name: str,
+        target_stages: list[str] | None,
+    ) -> bool:
+        return self.status.is_stage_completed(stage_name) and (
+            not target_stages or stage_name not in target_stages
+        )
 
-            try:
-                # Run the stage
-                stage_func = stage_functions[stage_name]
-                if asyncio.iscoroutinefunction(stage_func):
-                    success = await stage_func()
-                else:
-                    success = stage_func()
+    async def _run_stage(self, stage_name: str, stage_callable: StageCallable) -> bool:
+        self.status.start_stage(stage_name)
 
-                self.status.complete_stage(stage_name, success=success)
+        try:
+            if asyncio.iscoroutinefunction(stage_callable):
+                success = await stage_callable()
+            else:
+                success = stage_callable()
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.exception("Stage %s failed", stage_name)
+            self.status.complete_stage(stage_name, success=False)
+            console.print(f"[red]❌ Pipeline failed at {stage_name}: {exc}")
+            return False
 
-                if not success:
-                    console.print(f"[red]❌ Pipeline stopped at {stage_name}")
-                    return False
+        success_bool = bool(success)
+        self.status.complete_stage(stage_name, success=success_bool)
+        if not success_bool:
+            console.print(f"[red]❌ Pipeline stopped at {stage_name}")
+        return success_bool
 
-                # If this was the last target stage and we're not continuing, stop here
-                if target_stages and not continue_after and stage_name in target_stages:
-                    remaining_targets = [
-                        s
-                        for s in target_stages
-                        if s in stages_to_run[stages_to_run.index(stage_name) + 1 :]
-                    ]
-                    if not remaining_targets:
-                        console.print("[green]✅ Specified stages completed")
-                        return True
+    def _should_stop_after_stage(
+        self,
+        stage_name: str,
+        target_stages: list[str] | None,
+        *,
+        continue_after: bool,
+        stages_to_run: list[str],
+    ) -> bool:
+        if not target_stages or continue_after or stage_name not in target_stages:
+            return False
 
-            except Exception as exc:
-                logger.exception("Stage %s failed", stage_name)
-                self.status.complete_stage(stage_name, success=False)
-                console.print(f"[red]❌ Pipeline failed at {stage_name}: {exc}")
-                return False
-
-        console.print(Panel("🎉 Pipeline completed successfully!", style="bold green"))
-        return True
+        stage_index = stages_to_run.index(stage_name)
+        remaining_targets = [
+            stage
+            for stage in target_stages
+            if stage in stages_to_run[stage_index + 1 :]
+        ]
+        return not remaining_targets
 
 
 def setup_logging(*, verbose: bool = False) -> None:
