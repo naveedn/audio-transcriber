@@ -65,7 +65,7 @@ uv run transcribe --help
 
 ```
 Audio Files → [Stage 0] → [Stage 1] → [Stage 2] → [Stage 3] → [Stage 4] → Final Transcript
-              Bootstrap   Preprocess  Silero     Whisper      GPT
+              Bootstrap   Preprocess  Senko      Whisper      GPT
 ```
 ### 🏗️ Architecture Benefits
 
@@ -86,11 +86,11 @@ Audio Files → [Stage 0] → [Stage 1] → [Stage 2] → [Stage 3] → [Stage 4
 - **Technology**: FFmpeg with parallel processing
 - **Output**: Cleaned audio files (`outputs/audio-files-wav/`)
 
-### Stage 2: Silero VAD (Voice Activity Detection)
+### Stage 2: Senko Diarization
 - **Input**: Cleaned audio files
-- **Purpose**: Detect speech segments and filter silence/noise
-- **Technology**: Silero VAD with parallel processing per file
-- **Output**: JSON files with speech timestamps (`outputs/silero-timestamps/`)
+- **Purpose**: Detect speech activity, cluster speakers, and produce diarized segments
+- **Technology**: [Senko](https://github.com/narcotic-sh/senko) diarizer (Pyannote VAD + CAM++ embeddings)
+- **Output**: JSON diarization bundles (`outputs/senko-diarization/`)
 
 ### Stage 3: Whisper Transcribe
 - **Input**: Speech segments and audio files
@@ -111,7 +111,7 @@ transcribe/
 ├── inputs/                    # Input FLAC audio files
 ├── outputs/
 │   ├── audio-files-wav/       # Stage 1: Converted WAV files
-│   ├── silero-timestamps/     # Stage 2: VAD speech segments
+│   ├── senko-diarization/     # Stage 2: Diarization results + VAD windows
 │   ├── whisper-transcripts/   # Stage 3: Raw transcriptions
 │   ├── gpt-cleanup/           # Stage 4: Final transcripts
 │   └── status.json            # Pipeline state tracking
@@ -120,7 +120,7 @@ transcribe/
 │   ├── main.py               # CLI interface and orchestration
 │   ├── config.py             # Configuration management
 │   ├── ffmpeg_preprocess.py  # Audio preprocessing
-│   ├── vad_timestamp.py      # Silero VAD integration
+│   ├── senko_diarizer.py     # Senko diarization integration
 │   ├── whisper_transcribe.py # MLX Whisper processing
 │   ├── gpt_merge.py          # Multi-speaker merging
 │   └── gpt_cleanup.py        # Final transcript cleanup
@@ -156,12 +156,11 @@ The system includes battle-tested configurations for best results:
 ffmpeg -i input.flac -ar 16000 -af "highpass=f=60,agate=threshold=-45dB:ratio=10:attack=5:release=60" output.wav
 ```
 
-**Silero VAD Parameters:**
-- Threshold start: 0.6 (start speech detection)
-- Threshold end: 0.4 (end speech detection)
-- Min speech: 300ms (filter brief sounds)
-- Min silence: 500ms (segment boundaries)
-- Merge gap: 400ms (adjacent segment merging)
+**Senko Diarization Defaults:**
+- `device='auto'`, `vad='auto'`, and `clustering='auto'` with optional overrides via `config.senko`
+- Warmup enabled by default for best throughput (can be disabled in config)
+- Accurate mode automatically mirrors Senko's GPU heuristics; toggle via `config.senko.accurate`
+- Diarization JSON captures merged segments, speaker centroids, and VAD windows for downstream stages
 
 **Whisper Settings:**
 - Model: small.en (optimal speed/accuracy balance)
@@ -193,7 +192,7 @@ uv run ruff format          # Format code
 
 - **Python 3.11+** with uv package manager
 - **Audio Processing**: FFmpeg, librosa, soundfile
-- **ML/AI**: MLX Whisper (Apple Silicon), Silero VAD, OpenAI API
+- **ML/AI**: Senko diarization, MLX Whisper (Apple Silicon), OpenAI API
 - **CLI**: Click with Rich console interface
 - **Configuration**: Pydantic with type validation
 - **Async**: asyncio for I/O-bound operations

@@ -61,12 +61,12 @@ The system processes audio through a 5-stage pipeline:
 
 ```
 Audio Files → [Stage 0] → [Stage 1] → [Stage 2] → [Stage 3] → [Stage 4] → Final Transcript
-              Bootstrap   preprocess  Silero     Whisper      GPT
+              Bootstrap   preprocess  Senko      Whisper      GPT
 ```
 
 1. **Stage 0: Bootstrap** - Model download and environment validation
 2. **Stage 1: Audio Preprocess** - FLAC to 16kHz mono WAV conversion using FFmpeg
-3. **Stage 2: Silero VAD** - Voice Activity Detection for speech segmentation
+3. **Stage 2: Senko Diarization** - Speaker clustering + VAD for segmentation
 4. **Stage 3: Whisper Transcribe** - Speech-to-text transcription with timestamps
 5. **Stage 4: GPT Processing** - Intelligent transcript merging and cleanup
 
@@ -75,7 +75,7 @@ Audio Files → [Stage 0] → [Stage 1] → [Stage 2] → [Stage 3] → [Stage 4
 - **src/config.py**: Pydantic-based configuration system with validation
 - **src/main.py**: CLI interface and pipeline orchestration using Click
 - **src/ffmpeg_preprocess.py**: Audio preprocessing with parallel processing
-- **src/vad_timestamp.py**: Silero VAD integration for speech detection
+- **src/senko_diarizer.py**: Senko diarization integration for speech detection
 - **src/whisper_transcribe.py**: MLX Whisper for Apple Silicon optimization
 - **src/gpt_merge.py**: Multi-speaker transcript merging
 - **src/gpt_cleanup.py**: Final transcript post-processing
@@ -85,7 +85,7 @@ Audio Files → [Stage 0] → [Stage 1] → [Stage 2] → [Stage 3] → [Stage 4
 inputs/                    # Input FLAC audio files
 outputs/
   ├── audio-files-wav/     # Converted WAV files
-  ├── silero-timestamps/   # VAD speech segments
+  ├── senko-diarization/   # Diarization bundles
   ├── whisper-transcripts/ # Raw transcriptions
   ├── gpt-cleanup/         # Final transcripts
   └── status.json          # Pipeline state tracking
@@ -108,7 +108,7 @@ HUGGINGFACE_TOKEN=your_huggingface_token_here  # optional
 ### Default Configuration
 The system uses optimal defaults from the specification:
 - FFmpeg: 16kHz mono with noise gate and high-pass filter
-- Silero VAD: Tuned thresholds for speech detection
+- Senko diarization: Pyannote VAD + CAM++ embeddings with auto device selection
 - Whisper: Small.en model with deterministic decoding
 - GPT: OpenAI API for intelligent post-processing
 
@@ -116,7 +116,7 @@ The system uses optimal defaults from the specification:
 
 - **Python 3.11+** with uv package manager
 - **Audio Processing**: FFmpeg, librosa, soundfile
-- **ML/AI**: MLX Whisper (Apple Silicon), Silero VAD, OpenAI API
+- **ML/AI**: Senko diarization, MLX Whisper (Apple Silicon), OpenAI API
 - **CLI**: Click with Rich console interface
 - **Configuration**: Pydantic with type validation
 - **Async**: asyncio for I/O-bound operations

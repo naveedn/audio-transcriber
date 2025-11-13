@@ -22,32 +22,24 @@ class FFmpegConfig(BaseModel):
     gate_release: int = Field(default=60, description="Noise gate release time")
 
 
-class SileroVADConfig(BaseModel):
-    """Configuration for Silero VAD speech detection."""
+class SenkoConfig(BaseModel):
+    """Configuration for Senko diarization."""
 
-    frame_ms: int = Field(default=32, description="Frame size in milliseconds (>=32)")
-    block_seconds: float = Field(
-        default=15.0, description="Streaming block size in seconds"
+    device: str = Field(default="auto", description="Device override for Senko")
+    vad: str = Field(default="auto", description="VAD backend override")
+    clustering: str = Field(
+        default="auto", description="Clustering location preference for CUDA devices"
     )
-    threshold_start: float = Field(
-        default=0.55, description="Start speech probability threshold"
+    warmup: bool = Field(
+        default=True, description="Warm up Senko models during initialization"
     )
-    threshold_end: float = Field(
-        default=0.35, description="End speech probability threshold"
+    quiet: bool = Field(default=True, description="Silence Senko progress logging")
+    accurate: bool | None = Field(
+        default=None,
+        description="Pass through to Senko accurate mode; defaults to Senko heuristics",
     )
-    min_speech_ms: int = Field(
-        default=300, description="Minimum speech duration to open segment"
-    )
-    min_silence_ms: int = Field(
-        default=500, description="Minimum silence to close segment"
-    )
-    merge_gap_ms: int = Field(default=400, description="Merge segments if gap < this")
-    pad_ms: int = Field(default=100, description="Padding for each segment")
-    drop_below_ms: int = Field(
-        default=200, description="Drop segments shorter than this"
-    )
-    rms_gate_dbfs: float = Field(
-        default=-50.0, description="RMS silence threshold in dBFS"
+    generate_colors: bool = Field(
+        default=False, description="Request speaker colors from Senko"
     )
 
 
@@ -87,9 +79,9 @@ class PathConfig(BaseModel):
         default=Path("outputs/audio-files-wav"),
         description="Preprocessed audio directory",
     )
-    silero_dir: Path = Field(
-        default=Path("outputs/silero-timestamps"),
-        description="VAD timestamps directory",
+    diarization_dir: Path = Field(
+        default=Path("outputs/senko-diarization"),
+        description="Senko diarization output directory",
     )
     whisper_dir: Path = Field(
         default=Path("outputs/whisper-transcripts"), description="Transcripts directory"
@@ -117,7 +109,7 @@ class Config(BaseModel):
     """Main configuration class for the audio processing pipeline."""
 
     ffmpeg: FFmpegConfig = Field(default_factory=FFmpegConfig)
-    silero: SileroVADConfig = Field(default_factory=SileroVADConfig)
+    senko: SenkoConfig = Field(default_factory=SenkoConfig)
     whisper: WhisperConfig = Field(default_factory=WhisperConfig)
     gpt: GPTConfig = Field(default_factory=GPTConfig)
     paths: PathConfig = Field(default_factory=PathConfig)
@@ -130,7 +122,6 @@ class Config(BaseModel):
     max_parallel_audio: int = Field(
         default=4, description="Max parallel audio preprocessing jobs"
     )
-    max_parallel_vad: int = Field(default=4, description="Max parallel VAD jobs")
 
     class Config:
         """Pydantic configuration."""
@@ -167,7 +158,7 @@ class Config(BaseModel):
             for dir_path in [
                 self.paths.outputs_dir,
                 self.paths.audio_wav_dir,
-                self.paths.silero_dir,
+                self.paths.diarization_dir,
                 self.paths.whisper_dir,
                 self.paths.gpt_dir,
             ]:
@@ -186,7 +177,7 @@ class Config(BaseModel):
         for dir_path in [
             self.paths.outputs_dir,
             self.paths.audio_wav_dir,
-            self.paths.silero_dir,
+            self.paths.diarization_dir,
             self.paths.whisper_dir,
             self.paths.gpt_dir,
         ]:

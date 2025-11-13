@@ -99,7 +99,7 @@ class AudioPreprocessor:
         return Path(filename).stem
 
     def find_input_files(self) -> list[Path]:
-        """Find all FLAC files in the inputs directory."""
+        """Find all audio files in the inputs directory."""
         input_files = []
 
         if not self.config.paths.inputs_dir.exists():
@@ -109,8 +109,16 @@ class AudioPreprocessor:
             )
             return input_files
 
-        # Look for FLAC files
-        for pattern in ["*.flac", "*.FLAC"]:
+        # Look for common audio file formats
+        audio_extensions = [
+            "*.flac",
+            "*.wav",
+            "*.mp3",
+            "*.m4a",
+            "*.ogg",
+            "*.aac",
+        ]
+        for pattern in audio_extensions:
             input_files.extend(self.config.paths.inputs_dir.glob(pattern))
 
         logger.info("Found %s audio files to process", len(input_files))
