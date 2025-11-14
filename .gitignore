@@ -127,3 +127,7 @@ dmypy.json
 # Local development tools
 .rope_project/
 .ropeproject/
+
+# Swift build artifacts (Parakeet bridge)
+parakeet_bridge/.build/
+parakeet_bridge/.swiftpm/

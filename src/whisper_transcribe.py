@@ -317,6 +317,24 @@ class WhisperTranscriber:
             return {"segments": [], "text": ""}
         return result
 
+    def check_dependencies(self) -> list[str]:
+        """Ensure an available Whisper backend exists."""
+        errors = []
+
+        if self.import_optional("mlx_whisper") is not None:
+            logger.info("MLX Whisper is available for Apple Silicon optimization")
+        elif self.import_optional("whisper") is not None:
+            logger.info("Standard Whisper is available")
+        else:
+            errors.append("Neither MLX Whisper nor standard Whisper is installed")
+
+        try:
+            self.load_model()
+        except ImportError as exc:
+            errors.append(f"Cannot initialize Whisper: {exc}")
+
+        return errors
+
     def save_transcription(
         self,
         transcription: dict,
@@ -365,7 +383,14 @@ class TranscriptionProcessor:
     def __init__(self, config: Config) -> None:
         """Initialize the transcription processor."""
         self.config = config
-        self.transcriber = WhisperTranscriber(config)
+        backend = config.transcription_backend
+        self.backend = backend
+        if backend == "parakeet":
+            from .parakeet_transcribe import ParakeetTranscriber  # noqa: PLC0415
+
+            self.transcriber = ParakeetTranscriber(config)
+        else:
+            self.transcriber = WhisperTranscriber(config)
 
     def find_audio_and_diarization_files(self) -> list[tuple[Path, Path]]:
         """Find matching audio and diarization files for transcription."""
@@ -465,6 +490,8 @@ class TranscriptionProcessor:
                         progress,
                         task_id,
                     )
+                    if progress and task_id is not None:
+                        progress.update(task_id, completed=total_segments)
 
                     if transcription["segments"]:
                         # Save transcription
@@ -497,21 +524,9 @@ class TranscriptionProcessor:
 
     def check_dependencies(self) -> list[str]:
         """Check if required dependencies are available."""
-        errors = []
-
-        if self.transcriber.import_optional("mlx_whisper") is not None:
-            logger.info("MLX Whisper is available for Apple Silicon optimization")
-        elif self.transcriber.import_optional("whisper") is not None:
-            logger.info("Standard Whisper is available")
-        else:
-            errors.append("Neither MLX Whisper nor standard Whisper is installed")
-
-        try:
-            self.transcriber.load_model()
-        except ImportError as exc:
-            errors.append(f"Cannot initialize Whisper: {exc}")
-
-        return errors
+        if hasattr(self.transcriber, "check_dependencies"):
+            return self.transcriber.check_dependencies()
+        return []
 
 
 def transcribe_audio(
@@ -526,7 +541,7 @@ def transcribe_audio(
     if errors:
         for error in errors:
             logger.error(error)
-        msg = "Whisper dependency check failed"
+        msg = "Transcription dependency check failed"
         raise RuntimeError(msg)
 
     # Process files

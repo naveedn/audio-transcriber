@@ -287,6 +287,16 @@ class AudioPipeline:
 
     def _check_required_processors(self) -> bool:
         """Ensure mandatory processors and dependencies are ready."""
+        transcription_name = (
+            "Parakeet"
+            if self.config.transcription_backend == "parakeet"
+            else "Whisper"
+        )
+        transcription_success = (
+            "[green]✅ Parakeet backend ready"
+            if self.config.transcription_backend == "parakeet"
+            else "[green]✅ Whisper model loaded"
+        )
         checks = [
             (AudioPreprocessor, "FFmpeg", "[green]✅ FFmpeg available"),
             (
@@ -294,7 +304,7 @@ class AudioPipeline:
                 "Senko Diarizer",
                 "[green]✅ Senko diarizer ready",
             ),
-            (TranscriptionProcessor, "Whisper", "[green]✅ Whisper model loaded"),
+            (TranscriptionProcessor, transcription_name, transcription_success),
         ]
 
         for processor_cls, name, success_message in checks:
@@ -719,15 +729,32 @@ def cli(ctx: click.Context, *, verbose: bool, config_file: Path | None) -> None:
     is_flag=True,
     help="Continue to next stages after specified stages complete",
 )
+@click.option(
+    "--transcription-backend",
+    type=click.Choice(["whisper", "parakeet-v2", "parakeet-v3"]),
+    help="Override the Stage 3 transcription backend for this run",
+)
 @click.pass_context
 def run(
     ctx: click.Context,
     stage: str | None,
     *,
     continue_after: bool,
+    transcription_backend: str | None,
 ) -> None:
     """Run the complete audio processing pipeline or specific stages."""
     config = ctx.obj["config"]
+
+    if transcription_backend:
+        if transcription_backend == "whisper":
+            config.transcription_backend = "whisper"
+        else:
+            config.transcription_backend = "parakeet"
+            if transcription_backend == "parakeet-v3":
+                config.parakeet.model_version = "v3"
+            else:
+                config.parakeet.model_version = "v2"
+
     pipeline = AudioPipeline(config)
 
     try:

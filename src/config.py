@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -60,6 +61,37 @@ class WhisperConfig(BaseModel):
     )
 
 
+class ParakeetConfig(BaseModel):
+    """Configuration for the Parakeet CoreML transcription backend."""
+
+    executable_path: Path = Field(
+        default=Path("parakeet_bridge/.build/release/parakeet-transcriber"),
+        description="Compiled Parakeet Swift bridge executable",
+    )
+    model_version: Literal["v2", "v3"] = Field(
+        default="v2", description="Parakeet ASR model version to run"
+    )
+    models_root: Path | None = Field(
+        default=None,
+        description="Optional directory containing downloaded Parakeet models",
+    )
+    min_segment_seconds: float = Field(
+        default=1.0, description="Minimum segment duration sent to CoreML"
+    )
+    language: str = Field(
+        default="en",
+        description="Language metadata propagated to the transcription output",
+    )
+
+    @field_validator("executable_path", "models_root", mode="before")
+    @classmethod
+    def resolve_paths(cls, value: object) -> object:
+        """Resolve CLI paths to absolute Path instances."""
+        if isinstance(value, (str, Path)):
+            return Path(value).expanduser().resolve()
+        return value
+
+
 class GPTConfig(BaseModel):
     """Configuration for GPT post-processing."""
 
@@ -84,7 +116,7 @@ class PathConfig(BaseModel):
         description="Senko diarization output directory",
     )
     whisper_dir: Path = Field(
-        default=Path("outputs/whisper-transcripts"), description="Transcripts directory"
+        default=Path("outputs/transcripts"), description="Transcripts directory"
     )
     gpt_dir: Path = Field(
         default=Path("outputs/gpt-cleanup"), description="Final transcripts directory"
@@ -111,8 +143,13 @@ class Config(BaseModel):
     ffmpeg: FFmpegConfig = Field(default_factory=FFmpegConfig)
     senko: SenkoConfig = Field(default_factory=SenkoConfig)
     whisper: WhisperConfig = Field(default_factory=WhisperConfig)
+    parakeet: ParakeetConfig = Field(default_factory=ParakeetConfig)
     gpt: GPTConfig = Field(default_factory=GPTConfig)
     paths: PathConfig = Field(default_factory=PathConfig)
+    transcription_backend: Literal["whisper", "parakeet"] = Field(
+        default="whisper",
+        description="Speech-to-text backend to use for Stage 3",
+    )
 
     # API Keys
     openai_api_key: str | None = Field(default=None, description="OpenAI API key")
