@@ -33,8 +33,9 @@ cp .env.template .env
 # OPENAI_API_KEY=your_openai_api_key_here
 # HUGGINGFACE_TOKEN=your_huggingface_token_here  # optional
 
-# Build the Parakeet Swift bridge if you plan to use Parakeet TDT 0.6B v2/v3 models
+# Parakeet setup (if you plan to use Parakeet TDT 0.6B v2/v3 models)
 cd parakeet_bridge
+git clone --depth 1 https://github.com/FluidStackAI/FluidAudio.git
 swift build -c release --product parakeet-transcriber
 cd ..
 ```

@@ -14,7 +14,7 @@ let package = Package(
     ],
     dependencies: [
         .package(
-            path: "../../FluidAudio"
+            path: "FluidAudio"
         ),
     ],
     targets: [
