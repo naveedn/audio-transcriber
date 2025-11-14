@@ -35,7 +35,7 @@ cp .env.template .env
 
 # Parakeet setup (if you plan to use Parakeet TDT 0.6B v2/v3 models)
 cd parakeet_bridge
-git clone --depth 1 https://github.com/FluidStackAI/FluidAudio.git
+git clone --depth 1 https://github.com/FluidInference/FluidAudio.git
 swift build -c release --product parakeet-transcriber
 cd ..
 ```
