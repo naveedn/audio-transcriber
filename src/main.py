@@ -25,7 +25,7 @@ from .config import Config, load_config
 # Import stage modules with corrected names
 from .ffmpeg_preprocess import AudioPreprocessor, preprocess_audio
 from .gpt_cleanup import TranscriptProcessor, cleanup_transcript
-from .vad_timestamp import VADProcessor, process_vad
+from .senko_diarizer import SenkoDiarizationProcessor, diarize_audio
 from .whisper_transcribe import TranscriptionProcessor, transcribe_audio
 
 console = Console()
@@ -55,41 +55,53 @@ class PipelineStatus:
 
     def _load_status(self) -> dict:
         """Load status from file."""
+        stage_template = {
+            "stage0_bootstrap": {
+                "status": "pending",
+                "start_time": None,
+                "end_time": None,
+            },
+            "stage1_preprocess": {
+                "status": "pending",
+                "start_time": None,
+                "end_time": None,
+            },
+            "stage2_diarize": {
+                "status": "pending",
+                "start_time": None,
+                "end_time": None,
+            },
+            "stage3_whisper": {
+                "status": "pending",
+                "start_time": None,
+                "end_time": None,
+            },
+            "stage4_process": {
+                "status": "pending",
+                "start_time": None,
+                "end_time": None,
+            },
+        }
+
         if self.status_file.exists():
             try:
                 with self.status_file.open() as file_obj:
-                    return json.load(file_obj)
+                    status = json.load(file_obj)
+                stages = status.setdefault("stages", {})
+                if "stage2_vad" in stages and "stage2_diarize" not in stages:
+                    stages["stage2_diarize"] = stages.pop("stage2_vad")
+                for stage_name, template in stage_template.items():
+                    if stage_name not in stages:
+                        stages[stage_name] = template.copy()
+                return status
             except (OSError, json.JSONDecodeError) as exc:
                 logger.warning("Could not load status file: %s", exc)
 
         return {
             "pipeline_start": None,
             "stages": {
-                "stage0_bootstrap": {
-                    "status": "pending",
-                    "start_time": None,
-                    "end_time": None,
-                },
-                "stage1_preprocess": {
-                    "status": "pending",
-                    "start_time": None,
-                    "end_time": None,
-                },
-                "stage2_vad": {
-                    "status": "pending",
-                    "start_time": None,
-                    "end_time": None,
-                },
-                "stage3_whisper": {
-                    "status": "pending",
-                    "start_time": None,
-                    "end_time": None,
-                },
-                "stage4_process": {
-                    "status": "pending",
-                    "start_time": None,
-                    "end_time": None,
-                },
+                stage_name: template.copy()
+                for stage_name, template in stage_template.items()
             },
         }
 
@@ -160,7 +172,7 @@ class PipelineStatus:
         stage_names = {
             "stage0_bootstrap": "Bootstrap",
             "stage1_preprocess": "Audio Preprocessing",
-            "stage2_vad": "Voice Activity Detection",
+            "stage2_diarize": "Speaker Diarization",
             "stage3_whisper": "Speech Transcription",
             "stage4_process": "Final Processing",
         }
@@ -175,7 +187,7 @@ class PipelineStatus:
         stage_order = [
             "stage0_bootstrap",
             "stage1_preprocess",
-            "stage2_vad",
+            "stage2_diarize",
             "stage3_whisper",
             "stage4_process",
         ]
@@ -197,7 +209,7 @@ class PipelineStatus:
         stage_names = {
             "stage0_bootstrap": "0. Bootstrap",
             "stage1_preprocess": "1. Audio Preprocessing",
-            "stage2_vad": "2. Voice Activity Detection",
+            "stage2_diarize": "2. Speaker Diarization",
             "stage3_whisper": "3. Speech Transcription",
             "stage4_process": "4. Final Processing",
         }
@@ -275,10 +287,24 @@ class AudioPipeline:
 
     def _check_required_processors(self) -> bool:
         """Ensure mandatory processors and dependencies are ready."""
+        transcription_name = (
+            "Parakeet"
+            if self.config.transcription_backend == "parakeet"
+            else "Whisper"
+        )
+        transcription_success = (
+            "[green]✅ Parakeet backend ready"
+            if self.config.transcription_backend == "parakeet"
+            else "[green]✅ Whisper model loaded"
+        )
         checks = [
             (AudioPreprocessor, "FFmpeg", "[green]✅ FFmpeg available"),
-            (VADProcessor, "Silero VAD", "[green]✅ Silero VAD model loaded"),
-            (TranscriptionProcessor, "Whisper", "[green]✅ Whisper model loaded"),
+            (
+                SenkoDiarizationProcessor,
+                "Senko Diarizer",
+                "[green]✅ Senko diarizer ready",
+            ),
+            (TranscriptionProcessor, transcription_name, transcription_success),
         ]
 
         for processor_cls, name, success_message in checks:
@@ -345,11 +371,11 @@ class AudioPipeline:
         return False
 
     async def run_stage2(self) -> bool:
-        """Stage 2: Voice Activity Detection."""
-        console.print(Panel("🎤 Stage 2: Voice Activity Detection", style="bold blue"))
+        """Stage 2: Speaker diarization (Senko)."""
+        console.print(Panel("🗣️ Stage 2: Speaker Diarization", style="bold blue"))
 
         try:
-            output_files = await process_vad(self.config)
+            output_files = diarize_audio(self.config)
         except Exception as exc:
             logger.exception("Stage 2 failed")
             console.print(f"[red]❌ Stage 2 failed: {exc}")
@@ -357,11 +383,11 @@ class AudioPipeline:
 
         if output_files:
             console.print(
-                f"[green]Generated VAD timestamps for {len(output_files)} files"
+                f"[green]Generated diarization data for {len(output_files)} files"
             )
             return True
 
-        console.print("[yellow]No VAD timestamps generated")
+        console.print("[yellow]No diarization data generated")
         return False
 
     def run_stage3(self) -> bool:
@@ -474,7 +500,7 @@ class AudioPipeline:
         return {
             "bootstrap": "stage0_bootstrap",
             "preprocess": "stage1_preprocess",
-            "vad": "stage2_vad",
+            "diarize": "stage2_diarize",
             "whisper": "stage3_whisper",
             "process": "stage4_process",
         }
@@ -534,7 +560,7 @@ class AudioPipeline:
         return {
             "stage0_bootstrap": self.bootstrap,
             "stage1_preprocess": self.run_stage1,
-            "stage2_vad": self.run_stage2,
+            "stage2_diarize": self.run_stage2,
             "stage3_whisper": self.run_stage3,
             "stage4_process": self.run_stage4,
         }
@@ -543,7 +569,7 @@ class AudioPipeline:
         return [
             "stage0_bootstrap",
             "stage1_preprocess",
-            "stage2_vad",
+            "stage2_diarize",
             "stage3_whisper",
             "stage4_process",
         ]
@@ -694,7 +720,7 @@ def cli(ctx: click.Context, *, verbose: bool, config_file: Path | None) -> None:
     "--stage",
     help=(
         "Comma-separated list of stages to run "
-        "(bootstrap, preprocess, vad, whisper, process)"
+        "(bootstrap, preprocess, diarize, whisper, process)"
     ),
 )
 @click.option(
@@ -703,15 +729,32 @@ def cli(ctx: click.Context, *, verbose: bool, config_file: Path | None) -> None:
     is_flag=True,
     help="Continue to next stages after specified stages complete",
 )
+@click.option(
+    "--transcription-backend",
+    type=click.Choice(["whisper", "parakeet-v2", "parakeet-v3"]),
+    help="Override the Stage 3 transcription backend for this run",
+)
 @click.pass_context
 def run(
     ctx: click.Context,
     stage: str | None,
     *,
     continue_after: bool,
+    transcription_backend: str | None,
 ) -> None:
     """Run the complete audio processing pipeline or specific stages."""
     config = ctx.obj["config"]
+
+    if transcription_backend:
+        if transcription_backend == "whisper":
+            config.transcription_backend = "whisper"
+        else:
+            config.transcription_backend = "parakeet"
+            if transcription_backend == "parakeet-v3":
+                config.parakeet.model_version = "v3"
+            else:
+                config.parakeet.model_version = "v2"
+
     pipeline = AudioPipeline(config)
 
     try:
@@ -771,7 +814,7 @@ def clean(ctx: click.Context) -> None:
     output_dirs = [
         config.paths.outputs_dir,
         config.paths.audio_wav_dir,
-        config.paths.silero_dir,
+        config.paths.diarization_dir,
         config.paths.whisper_dir,
         config.paths.gpt_dir,
     ]

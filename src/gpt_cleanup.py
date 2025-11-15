@@ -87,7 +87,7 @@ class TranscriptProcessor:
 
         # Find all transcript JSON files
         for json_file in whisper_dir.glob("*_transcript.json"):
-            speaker = json_file.stem.replace("_transcript", "")
+            track_name = json_file.stem.replace("_transcript", "")
 
             try:
                 with json_file.open(encoding="utf-8") as file_obj:
@@ -105,7 +105,7 @@ class TranscriptProcessor:
                         start_sec=segment["start"],
                         end_sec=segment["end"],
                         text=segment["text"],
-                        speaker=speaker,
+                        speaker=segment.get("speaker") or track_name,
                     )
                     for segment in data["transcription"]["segments"]
                 )
@@ -115,7 +115,7 @@ class TranscriptProcessor:
                         start_sec=segment["start_sec"],
                         end_sec=segment["end_sec"],
                         text=segment["text"],
-                        speaker=speaker,
+                        speaker=segment.get("speaker") or track_name,
                     )
                     for segment in data
                 )

@@ -68,15 +68,16 @@ class WhisperTranscriber:
         msg = "Neither MLX Whisper nor standard Whisper is available"
         raise ImportError(msg) from None
 
-    def _load_vad_segments(self, vad_path: Path) -> list[dict]:
-        """Load VAD segments from JSON file."""
+    def _load_diarization_data(self, diarization_path: Path) -> dict:
+        """Load Senko diarization metadata."""
         try:
-            with vad_path.open(encoding="utf-8") as file_obj:
-                data = json.load(file_obj)
-                return data.get("segments", [])
+            with diarization_path.open(encoding="utf-8") as file_obj:
+                return json.load(file_obj)
         except (OSError, json.JSONDecodeError):
-            logger.exception("Error loading VAD segments from %s", vad_path)
-            return []
+            logger.exception(
+                "Error loading diarization data from %s", diarization_path
+            )
+            return {}
 
     def _extract_audio_segment(
         self,
@@ -155,8 +156,10 @@ class WhisperTranscriber:
             ) * 1000
             next_duration = (next_segment["end"] - next_segment["start"]) * 1000
 
+            same_speaker = current_segment.get("speaker") == next_segment.get("speaker")
             should_merge = (
-                gap_ms <= self.whisper_config.merge_sentence_gap_ms
+                same_speaker
+                and gap_ms <= self.whisper_config.merge_sentence_gap_ms
                 and current_duration < self.whisper_config.min_sentence_ms
                 and next_duration < self.whisper_config.min_sentence_ms
             )
@@ -214,31 +217,48 @@ class WhisperTranscriber:
     def transcribe_file(
         self,
         audio_path: Path,
-        vad_path: Path,
+        diarization_path: Path,
         progress: Progress | None = None,
         task_id: TaskID | None = None,
     ) -> dict:
-        """Transcribe a single audio file using VAD segments."""
+        """Transcribe a single audio file using Senko diarization segments."""
         try:
             logger.info("Transcribing %s", audio_path.name)
 
             # Load audio
             audio, sample_rate = librosa.load(str(audio_path), sr=16000)
 
-            # Load VAD segments
-            vad_segments = self._load_vad_segments(vad_path)
-            if not vad_segments:
-                logger.warning("No VAD segments found for %s", audio_path.name)
+            # Load diarization segments
+            diarization_data = self._load_diarization_data(diarization_path)
+            diarized_segments = diarization_data.get("merged_segments", [])
+            if not diarized_segments:
+                fallback_vad = diarization_data.get("vad_segments", [])
+                diarized_segments = [
+                    {
+                        "start": seg["start"],
+                        "end": seg["end"],
+                        "speaker": audio_path.stem,
+                    }
+                    for seg in fallback_vad
+                ]
+
+            if not diarized_segments:
+                logger.warning("No diarization segments found for %s", audio_path.name)
                 return {"segments": [], "text": ""}
 
-            logger.info("Processing %s VAD segments", len(vad_segments))
+            logger.info("Processing %s diarized segments", len(diarized_segments))
 
             # Transcribe each segment
             transcribed_segments = []
 
-            for i, vad_segment in enumerate(vad_segments):
-                start_time = vad_segment["start"]
-                end_time = vad_segment["end"]
+            for i, diar_segment in enumerate(diarized_segments):
+                start_time = diar_segment["start"]
+                end_time = diar_segment["end"]
+                diarized_speaker = diar_segment.get("speaker") or audio_path.stem
+                if diarized_speaker == audio_path.stem:
+                    speaker_label = diarized_speaker
+                else:
+                    speaker_label = f"{audio_path.stem}:{diarized_speaker}"
 
                 # Extract audio segment
                 audio_segment = self._extract_audio_segment(
@@ -261,6 +281,7 @@ class WhisperTranscriber:
                         "text": whisper_result["text"].strip(),
                         "words": whisper_result.get("words", []),
                         "segment_id": i,
+                        "speaker": speaker_label,
                     }
                     transcribed_segments.append(segment_data)
 
@@ -296,6 +317,24 @@ class WhisperTranscriber:
             return {"segments": [], "text": ""}
         return result
 
+    def check_dependencies(self) -> list[str]:
+        """Ensure an available Whisper backend exists."""
+        errors = []
+
+        if self.import_optional("mlx_whisper") is not None:
+            logger.info("MLX Whisper is available for Apple Silicon optimization")
+        elif self.import_optional("whisper") is not None:
+            logger.info("Standard Whisper is available")
+        else:
+            errors.append("Neither MLX Whisper nor standard Whisper is installed")
+
+        try:
+            self.load_model()
+        except ImportError as exc:
+            errors.append(f"Cannot initialize Whisper: {exc}")
+
+        return errors
+
     def save_transcription(
         self,
         transcription: dict,
@@ -309,8 +348,14 @@ class WhisperTranscriber:
 
             # Save JSON
             json_path = output_path.with_suffix(".json")
+            diarized = any(
+                segment.get("speaker") not in (None, speaker_name)
+                for segment in transcription.get("segments", [])
+            )
             transcription_data = {
+                "track": speaker_name,
                 "speaker": speaker_name,
+                "diarized": diarized,
                 "transcription": transcription,
                 "config": self.whisper_config.model_dump(),
             }
@@ -338,42 +383,58 @@ class TranscriptionProcessor:
     def __init__(self, config: Config) -> None:
         """Initialize the transcription processor."""
         self.config = config
-        self.transcriber = WhisperTranscriber(config)
+        backend = config.transcription_backend
+        self.backend = backend
+        if backend == "parakeet":
+            from .parakeet_transcribe import ParakeetTranscriber  # noqa: PLC0415
 
-    def find_audio_and_vad_files(self) -> list[tuple[Path, Path]]:
-        """Find matching audio and VAD files for transcription."""
-        audio_vad_pairs = []
+            self.transcriber = ParakeetTranscriber(config)
+        else:
+            self.transcriber = WhisperTranscriber(config)
+
+    def find_audio_and_diarization_files(self) -> list[tuple[Path, Path]]:
+        """Find matching audio and diarization files for transcription."""
+        audio_diar_pairs: list[tuple[Path, Path]] = []
 
         if not self.config.paths.audio_wav_dir.exists():
             logger.warning(
                 "Audio WAV directory does not exist: %s",
                 self.config.paths.audio_wav_dir,
             )
-            return audio_vad_pairs
+            return audio_diar_pairs
 
-        if not self.config.paths.silero_dir.exists():
+        if not self.config.paths.diarization_dir.exists():
             logger.warning(
-                "VAD directory does not exist: %s", self.config.paths.silero_dir
+                "Diarization directory does not exist: %s",
+                self.config.paths.diarization_dir,
             )
-            return audio_vad_pairs
+            return audio_diar_pairs
 
         # Find audio files
         audio_files = []
         for pattern in ["*.wav", "*.WAV"]:
             audio_files.extend(self.config.paths.audio_wav_dir.glob(pattern))
 
-        # Match with VAD files
+        # Match with diarization files
         for audio_path in audio_files:
             speaker_name = audio_path.stem
-            vad_path = self.config.paths.silero_dir / f"{speaker_name}_timestamps.json"
+            diarization_path = (
+                self.config.paths.diarization_dir / f"{speaker_name}_diarization.json"
+            )
 
-            if vad_path.exists():
-                audio_vad_pairs.append((audio_path, vad_path))
+            if diarization_path.exists():
+                audio_diar_pairs.append((audio_path, diarization_path))
             else:
-                logger.warning("No VAD file found for %s: %s", speaker_name, vad_path)
+                logger.warning(
+                    "No diarization file found for %s: %s",
+                    speaker_name,
+                    diarization_path,
+                )
 
-        logger.info("Found %s audio/VAD pairs for transcription", len(audio_vad_pairs))
-        return sorted(audio_vad_pairs)
+        logger.info(
+            "Found %s audio/diarization pairs for transcription", len(audio_diar_pairs)
+        )
+        return sorted(audio_diar_pairs)
 
     def get_output_path(self, audio_path: Path) -> Path:
         """Get the output path for transcription."""
@@ -381,14 +442,14 @@ class TranscriptionProcessor:
         return self.config.paths.whisper_dir / f"{speaker_name}_transcript"
 
     def process_files(
-        self, audio_vad_pairs: list[tuple[Path, Path]] | None = None
+        self, audio_diar_pairs: list[tuple[Path, Path]] | None = None
     ) -> dict[str, Path]:
         """Process multiple audio files for transcription sequentially."""
-        if audio_vad_pairs is None:
-            audio_vad_pairs = self.find_audio_and_vad_files()
+        if audio_diar_pairs is None:
+            audio_diar_pairs = self.find_audio_and_diarization_files()
 
-        if not audio_vad_pairs:
-            logger.warning("No audio/VAD pairs found for transcription")
+        if not audio_diar_pairs:
+            logger.warning("No audio/diarization pairs found for transcription")
             return {}
 
         successful_outputs = {}
@@ -402,15 +463,17 @@ class TranscriptionProcessor:
             TaskProgressColumn(),
             console=console,
         ) as progress:
-            for audio_path, vad_path in audio_vad_pairs:
+            for audio_path, diarization_path in audio_diar_pairs:
                 speaker_name = audio_path.stem
                 output_path = self.get_output_path(audio_path)
 
-                # Load VAD segments to determine total work
+                # Load diarization segments to determine total work
                 try:
-                    with vad_path.open(encoding="utf-8") as file_obj:
-                        vad_data = json.load(file_obj)
-                        total_segments = len(vad_data.get("segments", []))
+                    with diarization_path.open(encoding="utf-8") as file_obj:
+                        diarization_data = json.load(file_obj)
+                        total_segments = len(
+                            diarization_data.get("merged_segments", [])
+                        )
                 except (OSError, json.JSONDecodeError):
                     total_segments = 1
 
@@ -423,10 +486,12 @@ class TranscriptionProcessor:
                     # Transcribe file
                     transcription = self.transcriber.transcribe_file(
                         audio_path,
-                        vad_path,
+                        diarization_path,
                         progress,
                         task_id,
                     )
+                    if progress and task_id is not None:
+                        progress.update(task_id, completed=total_segments)
 
                     if transcription["segments"]:
                         # Save transcription
@@ -459,26 +524,14 @@ class TranscriptionProcessor:
 
     def check_dependencies(self) -> list[str]:
         """Check if required dependencies are available."""
-        errors = []
-
-        if self.transcriber.import_optional("mlx_whisper") is not None:
-            logger.info("MLX Whisper is available for Apple Silicon optimization")
-        elif self.transcriber.import_optional("whisper") is not None:
-            logger.info("Standard Whisper is available")
-        else:
-            errors.append("Neither MLX Whisper nor standard Whisper is installed")
-
-        try:
-            self.transcriber.load_model()
-        except ImportError as exc:
-            errors.append(f"Cannot initialize Whisper: {exc}")
-
-        return errors
+        if hasattr(self.transcriber, "check_dependencies"):
+            return self.transcriber.check_dependencies()
+        return []
 
 
 def transcribe_audio(
     config: Config,
-    audio_vad_pairs: list[tuple[Path, Path]] | None = None,
+    audio_diar_pairs: list[tuple[Path, Path]] | None = None,
 ) -> dict[str, Path]:
     """Main function to transcribe audio files."""
     processor = TranscriptionProcessor(config)
@@ -488,11 +541,11 @@ def transcribe_audio(
     if errors:
         for error in errors:
             logger.error(error)
-        msg = "Whisper dependency check failed"
+        msg = "Transcription dependency check failed"
         raise RuntimeError(msg)
 
     # Process files
-    return processor.process_files(audio_vad_pairs)
+    return processor.process_files(audio_diar_pairs)
 
 
 if __name__ == "__main__":
@@ -513,9 +566,9 @@ if __name__ == "__main__":
         help="Directory containing WAV files",
     )
     parser.add_argument(
-        "--vad-dir",
+        "--diarization-dir",
         type=Path,
-        help="Directory containing VAD timestamp files",
+        help="Directory containing Senko diarization files",
     )
     parser.add_argument(
         "--output-dir",
@@ -535,10 +588,10 @@ if __name__ == "__main__":
     config_overrides = {}
     if args.audio_dir:
         config_overrides["paths"] = {"audio_wav_dir": args.audio_dir}
-    if args.vad_dir:
+    if args.diarization_dir:
         if "paths" not in config_overrides:
             config_overrides["paths"] = {}
-        config_overrides["paths"]["silero_dir"] = args.vad_dir
+        config_overrides["paths"]["diarization_dir"] = args.diarization_dir
     if args.output_dir:
         if "paths" not in config_overrides:
             config_overrides["paths"] = {}

@@ -32,14 +32,22 @@ cp .env.template .env
 # Edit .env with your API keys:
 # OPENAI_API_KEY=your_openai_api_key_here
 # HUGGINGFACE_TOKEN=your_huggingface_token_here  # optional
+
+# Parakeet setup (if you plan to use Parakeet TDT 0.6B v2/v3 models)
+cd parakeet_bridge
+git clone --depth 1 https://github.com/FluidInference/FluidAudio.git
+swift build -c release --product parakeet-transcriber
+cd ..
 ```
 
 ### Basic Usage
 
 ```bash
-
 # Run full pipeline or resume from the last completed stage
 uv run transcribe run
+
+# Override Stage 3 backend
+uv run transcribe run --transcription-backend whisper|parakeet-v2|parakeet-v3
 
 # Validate installation and API keys
 uv run transcribe validate
@@ -65,7 +73,7 @@ uv run transcribe --help
 
 ```
 Audio Files → [Stage 0] → [Stage 1] → [Stage 2] → [Stage 3] → [Stage 4] → Final Transcript
-              Bootstrap   Preprocess  Silero     Whisper      GPT
+              Bootstrap   Preprocess    Senko     Transcribe    GPT
 ```
 ### 🏗️ Architecture Benefits
 
@@ -86,17 +94,19 @@ Audio Files → [Stage 0] → [Stage 1] → [Stage 2] → [Stage 3] → [Stage 4
 - **Technology**: FFmpeg with parallel processing
 - **Output**: Cleaned audio files (`outputs/audio-files-wav/`)
 
-### Stage 2: Silero VAD (Voice Activity Detection)
+### Stage 2: Senko Diarization
 - **Input**: Cleaned audio files
-- **Purpose**: Detect speech segments and filter silence/noise
-- **Technology**: Silero VAD with parallel processing per file
-- **Output**: JSON files with speech timestamps (`outputs/silero-timestamps/`)
+- **Purpose**: Detect speech activity, cluster speakers, and produce diarized segments
+- **Technology**: [Senko](https://github.com/narcotic-sh/senko) diarizer (Pyannote VAD + CAM++ embeddings)
+- **Output**: JSON diarization bundles (`outputs/senko-diarization/`)
 
-### Stage 3: Whisper Transcribe
+### Stage 3: Speech Transcription
 - **Input**: Speech segments and audio files
 - **Purpose**: Convert speech to text with word-level timestamps
-- **Technology**: MLX Whisper (Apple Silicon optimized)
-- **Output**: Raw transcripts with timestamps (`outputs/whisper-transcripts/`)
+- **Technology**:
+  - **Default**: MLX Whisper (Apple Silicon optimized) with CPU/GPU fallback
+  - **Optional**: NVIDIA Parakeet TDT 0.6B V2/V3 via [FluidAudio](https://github.com/FluidInference/FluidAudio)
+- **Output**: Raw transcripts with timestamps (`outputs/transcripts/`)
 
 ### Stage 4: GPT Processing
 - **Input**: Raw transcripts from all speakers
@@ -108,30 +118,31 @@ Audio Files → [Stage 0] → [Stage 1] → [Stage 2] → [Stage 3] → [Stage 4
 
 ```
 transcribe/
-├── inputs/                    # Input FLAC audio files
+├── inputs/                     # Input FLAC audio files
 ├── outputs/
-│   ├── audio-files-wav/       # Stage 1: Converted WAV files
-│   ├── silero-timestamps/     # Stage 2: VAD speech segments
-│   ├── whisper-transcripts/   # Stage 3: Raw transcriptions
-│   ├── gpt-cleanup/           # Stage 4: Final transcripts
-│   └── status.json            # Pipeline state tracking
-├── prompts/                   # GPT prompt templates
-├── src/                       # Source code
-│   ├── main.py               # CLI interface and orchestration
-│   ├── config.py             # Configuration management
-│   ├── ffmpeg_preprocess.py  # Audio preprocessing
-│   ├── vad_timestamp.py      # Silero VAD integration
-│   ├── whisper_transcribe.py # MLX Whisper processing
-│   ├── gpt_merge.py          # Multi-speaker merging
-│   └── gpt_cleanup.py        # Final transcript cleanup
-└── tests/                    # Test directory (currently empty)
+│   ├── audio-files-wav/        # Stage 1: Converted WAV files
+│   ├── senko-diarization/      # Stage 2: Diarization results + VAD windows
+│   ├── transcripts/            # Stage 3: Raw transcriptions
+│   ├── gpt-cleanup/            # Stage 4: Final transcripts
+│   └── status.json             # Pipeline state tracking
+├── prompts/                    # GPT prompt templates
+├── src/                        # Source code
+│   ├── main.py                 # CLI interface and orchestration
+│   ├── config.py               # Configuration management
+│   ├── ffmpeg_preprocess.py    # Audio preprocessing
+│   ├── senko_diarizer.py       # Senko diarization integration
+│   ├── whisper_transcribe.py   # Stage 3 orchestration + Whisper backend
+│   ├── parakeet_transcribe.py  # Parakeet CoreML backend shim
+│   ├── gpt_merge.py            # Multi-speaker merging
+│   └── gpt_cleanup.py          # Final transcript cleanup
+└── tests/                      # Test directory (currently empty)
 ```
 
 ## 🔧 Configuration
 
 ### Input Files
 
-Place your FLAC audio files in the `inputs/` directory:
+Place your audio files in the `inputs/` directory (`.flac` as an example):
 ```
 inputs/
 ├── speaker1.flac
@@ -156,18 +167,16 @@ The system includes battle-tested configurations for best results:
 ffmpeg -i input.flac -ar 16000 -af "highpass=f=60,agate=threshold=-45dB:ratio=10:attack=5:release=60" output.wav
 ```
 
-**Silero VAD Parameters:**
-- Threshold start: 0.6 (start speech detection)
-- Threshold end: 0.4 (end speech detection)
-- Min speech: 300ms (filter brief sounds)
-- Min silence: 500ms (segment boundaries)
-- Merge gap: 400ms (adjacent segment merging)
+**Senko Diarization Defaults:**
+- `device='auto'`, `vad='auto'`, and `clustering='auto'` with optional overrides via `config.senko`
+- Warmup enabled by default for best throughput (can be disabled in config)
+- Accurate mode automatically mirrors Senko's GPU heuristics; toggle via `config.senko.accurate`
+- Diarization JSON captures merged segments, speaker centroids, and VAD windows for downstream stages
 
 **Whisper Settings:**
 - Model: small.en (optimal speed/accuracy balance)
 - Temperature: 0.0 (deterministic output)
 - Language: English with sentence-level segmentation
-
 
 ## 🛠️ Development
 
@@ -193,7 +202,7 @@ uv run ruff format          # Format code
 
 - **Python 3.11+** with uv package manager
 - **Audio Processing**: FFmpeg, librosa, soundfile
-- **ML/AI**: MLX Whisper (Apple Silicon), Silero VAD, OpenAI API
+- **ML/AI**: Senko diarization, MLX Whisper (Apple Silicon), OpenAI API
 - **CLI**: Click with Rich console interface
 - **Configuration**: Pydantic with type validation
 - **Async**: asyncio for I/O-bound operations
